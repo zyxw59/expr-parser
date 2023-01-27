@@ -1,5 +1,6 @@
 use std::fmt;
 
+pub mod expression;
 pub mod token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
