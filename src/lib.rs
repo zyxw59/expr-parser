@@ -2,6 +2,7 @@ use std::fmt;
 
 pub mod expression;
 pub mod operator;
+pub mod parser;
 pub mod token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
