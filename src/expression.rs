@@ -2,7 +2,7 @@ use crate::{operator, Span};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Expression<'a> {
-    pub kind: ExprKind,
+    pub kind: ExpressionKind,
     pub span: Span,
     pub source: &'a str,
 }
@@ -13,4 +13,5 @@ pub enum ExpressionKind {
     UnaryOperator(operator::UnaryOperator),
     Integer(i64),
     Float(f64),
+    String,
 }

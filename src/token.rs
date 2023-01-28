@@ -27,10 +27,7 @@ impl<'s> Tokenizer<'s> {
         let kind = match ch.into() {
             CharKind::Digit => self.lex_number(),
             CharKind::Singleton => TokenKind::Tag,
-            CharKind::DoubleQuote => {
-                self.lex_string();
-                TokenKind::String
-            }
+            CharKind::DoubleQuote => self.lex_string(),
             kind => {
                 self.advance_while(|ch| kind.can_be_followed_by(ch));
                 TokenKind::Tag
@@ -75,7 +72,7 @@ impl<'s> Tokenizer<'s> {
         kind
     }
 
-    fn lex_string(&mut self) {
+    fn lex_string(&mut self) -> TokenKind {
         for (idx, _) in self.remainder.match_indices('"') {
             // includes the string up to the `"` we just found
             let string_match = &self.remainder[..idx];
@@ -89,11 +86,12 @@ impl<'s> Tokenizer<'s> {
                 // even number of backslashes => the `"` is unescaped
                 self.remainder = &self.remainder[idx..];
                 self.next();
-                break;
+                return TokenKind::String;
             }
         }
         // never found the closing `"`, we must have hit the end of the input
         self.remainder = "";
+        TokenKind::UnterminatedString
     }
 
     fn peek(&self) -> Option<char> {
@@ -137,10 +135,29 @@ impl<'s> Tokenizer<'s> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Token<'s> {
     span: Span,
     source: &'s str,
     kind: TokenKind,
+}
+
+impl<'s> Token<'s> {
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn source(&self) -> &'s str {
+        self.source
+    }
+
+    pub fn as_str(&self) -> &'s str {
+        &self.source[self.span.start..self.span.end]
+    }
+
+    pub fn kind(&self) -> TokenKind {
+        self.kind
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,6 +166,7 @@ pub enum TokenKind {
     Integer,
     Float,
     String,
+    UnterminatedString,
 }
 
 /// Characters allowed at the start of a token
@@ -235,38 +253,28 @@ mod tests {
 
     use super::{Span, TokenKind, Tokenizer};
 
-    #[test_case("abc", TokenKind::Tag, 0, 3 ; "tag abc")]
-    #[test_case("a\u{0300}bc", TokenKind::Tag, 0, 5 ; "tag with combining char")]
-    #[test_case("_0", TokenKind::Tag, 0, 2 ; "tag _0")]
-    #[test_case("abc+", TokenKind::Tag, 0, 3 ; "tag followed by other char")]
-    #[test_case("   \n\t\rabc", TokenKind::Tag, 6, 9 ; "leading whitespace")]
-    #[test_case("<>", TokenKind::Tag, 0, 2 ; "comparison tag")]
-    #[test_case("=-", TokenKind::Tag, 0, 1 ; "comparison followed by other char")]
-    #[test_case("-=", TokenKind::Tag, 0, 2 ; "other char followed by comparison")]
-    #[test_case("123", TokenKind::Integer, 0, 3 ; "integer")]
-    #[test_case("1_234", TokenKind::Integer, 0, 5 ; "integer with underscores")]
-    #[test_case("1.234", TokenKind::Float, 0, 5 ; "simple float")]
-    #[test_case("1e1", TokenKind::Float, 0, 3 ; "float exponential")]
-    #[test_case("1e1.", TokenKind::Float, 0, 3 ; "float exponential followed by dot")]
-    #[test_case("1e", TokenKind::Integer, 0, 1 ; "float incomplete exponential")]
-    #[test_case("1e-", TokenKind::Integer, 0, 1 ; "float incomplete exponential with sign")]
-    #[test_case("1.3e-10", TokenKind::Float, 0, 7 ; "float with")]
-    #[test_case(r#""abc\"\\\"\\""#, TokenKind::String, 0, 13 ; "string")]
-    #[test_case(r#""abc\"\\\"abc"#, TokenKind::String, 0, 13 ; "string unterminated")]
-    #[test_case("(((", TokenKind::Tag, 0, 1 ; "singleton")]
-    fn lex_one(source: &str, kind: TokenKind, start: usize, end: usize) {
+    #[test_case("abc", TokenKind::Tag, "abc" ; "tag abc")]
+    #[test_case("a\u{0300}bc", TokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
+    #[test_case("_0", TokenKind::Tag, "_0" ; "tag _0")]
+    #[test_case("abc+", TokenKind::Tag, "abc" ; "tag followed by other char")]
+    #[test_case("   \n\t\rabc", TokenKind::Tag, "abc" ; "leading whitespace")]
+    #[test_case("<>", TokenKind::Tag, "<>" ; "comparison tag")]
+    #[test_case("=-", TokenKind::Tag, "=" ; "comparison followed by other char")]
+    #[test_case("-=", TokenKind::Tag, "-=" ; "other char followed by comparison")]
+    #[test_case("123", TokenKind::Integer, "123" ; "integer")]
+    #[test_case("1_234", TokenKind::Integer, "1_234" ; "integer with underscores")]
+    #[test_case("1.234", TokenKind::Float, "1.234" ; "simple float")]
+    #[test_case("1e1", TokenKind::Float, "1e1" ; "float exponential")]
+    #[test_case("1e1.", TokenKind::Float, "1e1" ; "float exponential followed by dot")]
+    #[test_case("1e", TokenKind::Integer, "1" ; "float incomplete exponential")]
+    #[test_case("1e-", TokenKind::Integer, "1" ; "float incomplete exponential with sign")]
+    #[test_case("1.3e-10", TokenKind::Float, "1.3e-10" ; "float with all")]
+    #[test_case(r#""abc\"\\\"\\""#, TokenKind::String, r#""abc\"\\\"\\""# ; "string")]
+    #[test_case(r#""abc\"\\\"abc"#, TokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
+    #[test_case("(((", TokenKind::Tag, "(" ; "singleton")]
+    fn lex_one(source: &str, kind: TokenKind, as_str: &str) {
         let actual = Tokenizer::new(source).next_token().unwrap();
         assert_eq!(actual.kind, kind);
-        let expected_span = Span { start, end };
-        let actual_span = actual.span;
-        assert_eq!(
-            actual.span,
-            expected_span,
-            "\nexpected: {}\n{}\nactual: {}\n{}\n",
-            expected_span,
-            &source[start..end],
-            actual_span,
-            &source[actual_span.start..actual_span.end],
-        );
+        assert_eq!(actual.as_str(), as_str);
     }
 }
