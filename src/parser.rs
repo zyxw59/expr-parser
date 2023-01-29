@@ -33,7 +33,7 @@ where
         }
     }
 
-    pub fn parse(mut self) -> Result<VecDeque<Expression<'s>>, ParseErrors<'s>> {
+    pub fn parse(mut self) -> Result<VecDeque<Expression<'s>>, ParseErrors> {
         let mut errors = Vec::new();
         while !self.tokenizer.is_empty() {
             if let Err(err) = self.parse_next() {
@@ -45,9 +45,7 @@ where
                 StackElement::BinaryOperator(bin_op) => self.queue.push_back(bin_op.into()),
                 StackElement::UnaryOperator(un_op) => self.queue.push_back(un_op.into()),
                 StackElement::Delimiter(delim) => errors.push(ParseError::spanned(
-                    ParseErrorKind::UnmatchedLeftDelimiter {
-                        left: delim.token(),
-                    },
+                    ParseErrorKind::UnmatchedLeftDelimiter,
                     delim.token().span(),
                 )),
             }
@@ -59,14 +57,14 @@ where
         }
     }
 
-    fn parse_next(&mut self) -> Result<(), ParseError<'s>> {
+    fn parse_next(&mut self) -> Result<(), ParseError> {
         match self.state {
             State::ExpectTerm => self.parse_term(),
             State::ExpectOperator => self.parse_operator(),
         }
     }
 
-    fn parse_term(&mut self) -> Result<(), ParseError<'s>> {
+    fn parse_term(&mut self) -> Result<(), ParseError> {
         let token = self
             .tokenizer
             .next_token()
@@ -115,7 +113,7 @@ where
         Ok(())
     }
 
-    fn parse_operator(&mut self) -> Result<(), ParseError<'s>> {
+    fn parse_operator(&mut self) -> Result<(), ParseError> {
         let Some(token) = self.tokenizer.next_token() else {
             return Ok(());
         };
@@ -143,7 +141,6 @@ where
                     Err(ParseError::spanned(
                         ParseErrorKind::UnexpectedToken {
                             expected: EXPECT_OPERATOR,
-                            actual: token,
                         },
                         token.span(),
                     ))
@@ -154,7 +151,6 @@ where
                 Err(ParseError::spanned(
                     ParseErrorKind::UnexpectedToken {
                         expected: EXPECT_OPERATOR,
-                        actual: token,
                     },
                     token.span(),
                 ))
@@ -165,7 +161,7 @@ where
     fn process_right_delimiter(
         &mut self,
         right: operator::RightDelimiter<'s>,
-    ) -> Result<(), ParseError<'s>> {
+    ) -> Result<(), ParseError> {
         self.state = State::ExpectOperator;
         while let Some(op) = self.stack.pop() {
             match op {
@@ -175,8 +171,7 @@ where
                     } else {
                         return Err(ParseError::spanned(
                             ParseErrorKind::MismatchedDelimiter {
-                                left: left.token(),
-                                right: right.token(),
+                                opening: left.token().span(),
                             },
                             right.token().span(),
                         ));
@@ -191,9 +186,7 @@ where
             }
         }
         Err(ParseError::spanned(
-            ParseErrorKind::UnmatchedRightDelimiter {
-                right: right.token(),
-            },
+            ParseErrorKind::UnmatchedRightDelimiter,
             right.token().span(),
         ))
     }
@@ -201,7 +194,7 @@ where
     fn process_binary_operator(
         &mut self,
         bin_op: operator::BinaryOperator<'s>,
-    ) -> Result<(), ParseError<'s>> {
+    ) -> Result<(), ParseError> {
         self.state = State::ExpectTerm;
         self.pop_while_lower_precedence(bin_op.fixity(), bin_op.token().span())?;
         self.stack.push(StackElement::BinaryOperator(bin_op));
@@ -211,7 +204,7 @@ where
     fn process_postfix_operator(
         &mut self,
         post_op: operator::UnaryOperator<'s>,
-    ) -> Result<(), ParseError<'s>> {
+    ) -> Result<(), ParseError> {
         self.state = State::ExpectOperator;
         let fixity = operator::Fixity::Right(post_op.precedence());
         self.pop_while_lower_precedence(fixity, post_op.token().span())?;
@@ -223,7 +216,7 @@ where
         &mut self,
         fixity: operator::Fixity,
         span: Span,
-    ) -> Result<(), ParseError<'s>> {
+    ) -> Result<(), ParseError> {
         while let Some(prev_op) = self.stack.pop_if_lower_precedence(fixity) {
             match prev_op {
                 StackElement::BinaryOperator(prev) => self.queue.push_back(prev.into()),
@@ -243,7 +236,7 @@ where
         self.tokenizer.source()
     }
 
-    fn end_of_input(&self, expected: &'static str) -> ParseError<'s> {
+    fn end_of_input(&self, expected: &'static str) -> ParseError {
         let len = self.source().len();
         ParseError::spanned(
             ParseErrorKind::EndOfInput { expected },
@@ -413,7 +406,7 @@ mod tests {
     #[test_case("sin(max(5/2, 3)) / 3 * pi", "sin max 5 2 / 3 , ( ( 3 / pi *" ; "with functions" )]
     #[test_case("2^3!", "2 3 ! ^" ; "postfix operators" )]
     #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
-    fn parse_expression(input: &'static str, output: &str) -> anyhow::Result<()> {
+    fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = Parser::new(input, SimpleExprContext)
             .parse()?
             .into_iter()

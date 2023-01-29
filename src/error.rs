@@ -1,13 +1,13 @@
 use std::fmt;
 
-use crate::{token::Token, Span};
+use crate::Span;
 
 #[derive(Clone, Debug, thiserror::Error)]
-pub struct ParseErrors<'s> {
-    pub errors: Vec<ParseError<'s>>,
+pub struct ParseErrors {
+    pub errors: Vec<ParseError>,
 }
 
-impl<'s> fmt::Display for ParseErrors<'s> {
+impl fmt::Display for ParseErrors {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.errors.len() == 1 {
             f.write_str("Encountered 1 error:")?;
@@ -21,23 +21,23 @@ impl<'s> fmt::Display for ParseErrors<'s> {
     }
 }
 
-impl<'s> From<Vec<ParseError<'s>>> for ParseErrors<'s> {
-    fn from(errors: Vec<ParseError<'s>>) -> Self {
+impl From<Vec<ParseError>> for ParseErrors {
+    fn from(errors: Vec<ParseError>) -> Self {
         ParseErrors { errors }
     }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("Parse error at {span}: {kind}")]
-pub struct ParseError<'s> {
+pub struct ParseError {
     span: Span,
-    kind: ParseErrorKind<'s>,
+    kind: ParseErrorKind,
 }
 
-impl<'s> ParseError<'s> {
+impl ParseError {
     pub fn spanned<E>(error: E, span: Span) -> Self
     where
-        ParseErrorKind<'s>: From<E>,
+        ParseErrorKind: From<E>,
     {
         ParseError {
             span,
@@ -47,24 +47,21 @@ impl<'s> ParseError<'s> {
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
-pub enum ParseErrorKind<'s> {
+pub enum ParseErrorKind {
     #[error("Unexpected end of input (expected {expected})")]
     EndOfInput { expected: &'static str },
-    #[error("Unexpected token {actual} (expected {expected})")]
-    UnexpectedToken {
-        actual: Token<'s>,
-        expected: &'static str,
-    },
+    #[error("Unexpected token (expected {expected})")]
+    UnexpectedToken { expected: &'static str },
     #[error("Invalid integer literal: {0}")]
     ParseInt(#[from] ParseIntError),
     #[error("Unterminated string literal")]
     UnterminatedString,
-    #[error("Mismatched closing delimiter: {left} / {right}")]
-    MismatchedDelimiter { left: Token<'s>, right: Token<'s> },
-    #[error("Unmatched closing delimiter: {right}")]
-    UnmatchedRightDelimiter { right: Token<'s> },
-    #[error("Unmatched opening delimiter: {left}")]
-    UnmatchedLeftDelimiter { left: Token<'s> },
+    #[error("Mismatched closing delimiter (opening {opening})")]
+    MismatchedDelimiter { opening: Span },
+    #[error("Unmatched closing delimiter")]
+    UnmatchedRightDelimiter,
+    #[error("Unmatched opening delimiter")]
+    UnmatchedLeftDelimiter,
     #[error("Operator with `Base` precedence")]
     OperatorWithBasePrecedence,
 }
