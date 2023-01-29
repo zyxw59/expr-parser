@@ -20,6 +20,10 @@ impl Span {
             end: self.end.max(other.end),
         }
     }
+
+    pub fn into_range(self) -> Range<usize> {
+        self.into()
+    }
 }
 
 impl From<Span> for Range<usize> {

@@ -438,7 +438,7 @@ mod tests {
             .unwrap_err()
             .errors
             .into_iter()
-            .map(|err| (err.kind, Range::from(err.span)))
+            .map(|err| (err.kind, err.span.into_range()))
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }

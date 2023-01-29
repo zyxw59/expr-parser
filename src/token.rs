@@ -163,7 +163,7 @@ impl<'s> Token<'s> {
     }
 
     pub fn as_str(&self) -> &'s str {
-        &self.source[self.span.start..self.span.end]
+        &self.source[self.span.into_range()]
     }
 
     pub fn kind(&self) -> TokenKind {
