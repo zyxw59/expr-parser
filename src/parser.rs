@@ -358,6 +358,8 @@ fn parse_integer(s: &str) -> Result<i64, ParseIntError> {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::{ParseContext, Parser, Postfix, Prefix};
     use crate::{
         operator::{
@@ -379,6 +381,10 @@ mod tests {
 
         fn get_postfix<'s>(&self, token: Token<'s>) -> Postfix<'s> {
             match token.as_str() {
+                "," => Postfix::BinaryOperator(BinaryOperator::new(
+                    Fixity::Left(Precedence::Comma),
+                    token,
+                )),
                 "+" | "-" => Postfix::BinaryOperator(BinaryOperator::new(
                     Fixity::Left(Precedence::Additive),
                     token,
@@ -391,6 +397,8 @@ mod tests {
                     Fixity::Right(Precedence::Exponential),
                     token,
                 )),
+                "!" => Postfix::PostfixOperator(UnaryOperator::new(Precedence::Exponential, token)),
+                "(" => Postfix::LeftDelimiter(LeftDelimiter::new(token)),
                 ")" => Postfix::RightDelimiter(RightDelimiter::new(token)),
                 _ => Postfix::None,
             }
@@ -401,12 +409,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_simple_expression() -> anyhow::Result<()> {
-        let input = "3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3";
-        let queue = Parser::new(input, SimpleExprContext).parse()?.into_iter()
-            .map(|expr| expr.token.as_str()).collect::<Vec<_>>();
-        assert_eq!(queue, ["3", "4", "2", "*", "1", "5", "-", "2", "3", "^", "^", "/", "+"]);
+    #[test_case("3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3", "3 4 2 * 1 5 - 2 3 ^ ^ / +" ; "simple arithmetic" )]
+    #[test_case("sin(max(5/2, 3)) / 3 * pi", "sin max 5 2 / 3 , ( ( 3 / pi *" ; "with functions" )]
+    #[test_case("2^3!", "2 3 ! ^" ; "postfix operators" )]
+    #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
+    fn parse_expression(input: &'static str, output: &str) -> anyhow::Result<()> {
+        let actual = Parser::new(input, SimpleExprContext)
+            .parse()?
+            .into_iter()
+            .map(|expr| expr.token.as_str())
+            .collect::<Vec<_>>();
+        let expected = output.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(actual, expected);
         Ok(())
     }
 }
