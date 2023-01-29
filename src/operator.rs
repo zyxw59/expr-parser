@@ -10,6 +10,10 @@ pub struct BinaryOperator<'s> {
 }
 
 impl<'s> BinaryOperator<'s> {
+    pub fn new(fixity: Fixity, token: Token<'s>) -> Self {
+        Self { fixity, token }
+    }
+
     pub fn token(&self) -> Token<'s> {
         self.token
     }
@@ -39,6 +43,10 @@ pub struct UnaryOperator<'s> {
 }
 
 impl<'s> UnaryOperator<'s> {
+    pub fn new(precedence: Precedence, token: Token<'s>) -> Self {
+        Self { precedence, token }
+    }
+
     pub fn token(&self) -> Token<'s> {
         self.token
     }
@@ -63,6 +71,10 @@ pub struct LeftDelimiter<'s> {
 }
 
 impl<'s> LeftDelimiter<'s> {
+    pub fn new(token: Token<'s>) -> Self {
+        LeftDelimiter { token }
+    }
+
     pub fn token(&self) -> Token<'s> {
         self.token
     }
@@ -81,6 +93,10 @@ pub struct RightDelimiter<'s> {
 }
 
 impl<'s> RightDelimiter<'s> {
+    pub fn new(token: Token<'s>) -> Self {
+        RightDelimiter { token }
+    }
+
     pub fn token(&self) -> Token<'s> {
         self.token
     }

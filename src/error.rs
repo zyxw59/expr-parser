@@ -1,4 +1,31 @@
+use std::fmt;
+
 use crate::{token::Token, Span};
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub struct ParseErrors<'s> {
+    pub errors: Vec<ParseError<'s>>,
+}
+
+impl<'s> fmt::Display for ParseErrors<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.errors.len() == 1 {
+            f.write_str("Encountered 1 error:")?;
+        } else {
+            writeln!(f, "Encountered {} errors:", self.errors.len())?;
+        }
+        for error in &self.errors {
+            writeln!(f, "{error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl<'s> From<Vec<ParseError<'s>>> for ParseErrors<'s> {
+    fn from(errors: Vec<ParseError<'s>>) -> Self {
+        ParseErrors { errors }
+    }
+}
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("Parse error at {span}: {kind}")]
@@ -36,7 +63,8 @@ pub enum ParseErrorKind<'s> {
     MismatchedDelimiter { left: Token<'s>, right: Token<'s> },
     #[error("Unmatched closing delimiter: {right}")]
     UnmatchedRightDelimiter { right: Token<'s> },
-
+    #[error("Unmatched opening delimiter: {left}")]
+    UnmatchedLeftDelimiter { left: Token<'s> },
     #[error("Operator with `Base` precedence")]
     OperatorWithBasePrecedence,
 }

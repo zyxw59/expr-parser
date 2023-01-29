@@ -11,4 +11,5 @@ thiserror = "1.0.38"
 unicode-xid = "0.2.4"
 
 [dev-dependencies]
+anyhow = "1.0.68"
 test-case = "2.2.2"

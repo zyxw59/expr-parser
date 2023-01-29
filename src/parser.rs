@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::{
-    error::{ParseError, ParseErrorKind, ParseIntError},
+    error::{ParseError, ParseErrorKind, ParseErrors, ParseIntError},
     expression::{Expression, ExpressionKind},
     operator,
     token::{Token, TokenKind, Tokenizer},
@@ -33,17 +33,29 @@ where
         }
     }
 
-    pub fn parse(mut self) -> Result<VecDeque<Expression<'s>>, Vec<ParseError<'s>>> {
+    pub fn parse(mut self) -> Result<VecDeque<Expression<'s>>, ParseErrors<'s>> {
         let mut errors = Vec::new();
-        while !self.source().is_empty() {
+        while !self.tokenizer.is_empty() {
             if let Err(err) = self.parse_next() {
                 errors.push(err);
+            }
+        }
+        while let Some(op) = self.stack.pop() {
+            match op {
+                StackElement::BinaryOperator(bin_op) => self.queue.push_back(bin_op.into()),
+                StackElement::UnaryOperator(un_op) => self.queue.push_back(un_op.into()),
+                StackElement::Delimiter(delim) => errors.push(ParseError::spanned(
+                    ParseErrorKind::UnmatchedLeftDelimiter {
+                        left: delim.token(),
+                    },
+                    delim.token().span(),
+                )),
             }
         }
         if errors.is_empty() {
             Ok(self.queue)
         } else {
-            Err(errors)
+            Err(errors.into())
         }
     }
 
@@ -54,7 +66,7 @@ where
         }
     }
 
-    pub fn parse_term(&mut self) -> Result<(), ParseError<'s>> {
+    fn parse_term(&mut self) -> Result<(), ParseError<'s>> {
         let token = self
             .tokenizer
             .next_token()
@@ -76,12 +88,14 @@ where
                 }
             },
             TokenKind::Integer => {
+                self.state = State::ExpectOperator;
                 let int = parse_integer(token.as_str())
                     .map_err(|e| ParseError::spanned(e, token.span()))?;
                 self.queue
                     .push_back(token.to_expression(ExpressionKind::Integer(int)));
             }
             TokenKind::Float => {
+                self.state = State::ExpectOperator;
                 // parse float
                 todo!();
             }
@@ -91,7 +105,7 @@ where
                     .push_back(token.to_expression(ExpressionKind::String));
             }
             TokenKind::UnterminatedString => {
-                // unterminated string error
+                self.state = State::ExpectOperator;
                 return Err(ParseError::spanned(
                     ParseErrorKind::UnterminatedString,
                     token.span(),
@@ -101,7 +115,7 @@ where
         Ok(())
     }
 
-    pub fn parse_operator(&mut self) -> Result<(), ParseError<'s>> {
+    fn parse_operator(&mut self) -> Result<(), ParseError<'s>> {
         let Some(token) = self.tokenizer.next_token() else {
             return Ok(());
         };
@@ -340,4 +354,59 @@ fn parse_integer(s: &str) -> Result<i64, ParseIntError> {
         }
     }
     Ok(x)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParseContext, Parser, Postfix, Prefix};
+    use crate::{
+        operator::{
+            BinaryOperator, Fixity, LeftDelimiter, Precedence, RightDelimiter, UnaryOperator,
+        },
+        token::Token,
+    };
+
+    struct SimpleExprContext;
+
+    impl ParseContext for SimpleExprContext {
+        fn get_prefix<'s>(&self, token: Token<'s>) -> Prefix<'s> {
+            match token.as_str() {
+                "-" => Prefix::UnaryOperator(UnaryOperator::new(Precedence::Multiplicative, token)),
+                "(" => Prefix::Delimiter(LeftDelimiter::new(token)),
+                _ => Prefix::None,
+            }
+        }
+
+        fn get_postfix<'s>(&self, token: Token<'s>) -> Postfix<'s> {
+            match token.as_str() {
+                "+" | "-" => Postfix::BinaryOperator(BinaryOperator::new(
+                    Fixity::Left(Precedence::Additive),
+                    token,
+                )),
+                "*" | "/" => Postfix::BinaryOperator(BinaryOperator::new(
+                    Fixity::Left(Precedence::Multiplicative),
+                    token,
+                )),
+                "^" => Postfix::BinaryOperator(BinaryOperator::new(
+                    Fixity::Right(Precedence::Exponential),
+                    token,
+                )),
+                ")" => Postfix::RightDelimiter(RightDelimiter::new(token)),
+                _ => Postfix::None,
+            }
+        }
+
+        fn match_delimiters<'s>(&self, left: LeftDelimiter<'s>, right: RightDelimiter<'s>) -> bool {
+            matches!((left.token().as_str(), right.token().as_str()), ("(", ")"))
+        }
+    }
+
+    #[test]
+    fn parse_simple_expression() -> anyhow::Result<()> {
+        let input = "3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3";
+        let queue = Parser::new(input, SimpleExprContext).parse()?.into_iter()
+            .map(|expr| expr.token.as_str()).collect::<Vec<_>>();
+        assert_eq!(queue, ["3", "4", "2", "*", "1", "5", "-", "2", "3", "^", "^", "/", "+"]);
+        Ok(())
+    }
 }

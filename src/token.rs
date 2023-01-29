@@ -26,6 +26,12 @@ impl<'s> Tokenizer<'s> {
         self.source
     }
 
+    /// Returns whether the remainder of the input is empty (i.e. the tokenizer has run to
+    /// completion)
+    pub fn is_empty(&self) -> bool {
+        self.remainder.is_empty()
+    }
+
     pub fn next_token(&mut self) -> Option<Token<'s>> {
         // skip whitespace
         if self.next_if(char::is_whitespace).is_some() {
