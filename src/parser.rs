@@ -40,6 +40,9 @@ where
                 errors.push(err);
             }
         }
+        if self.state == State::ExpectTerm {
+            errors.push(self.end_of_input(EXPECT_TERM));
+        }
         while let Some(op) = self.stack.pop() {
             match op {
                 StackElement::BinaryOperator(bin_op) => self.queue.push_back(bin_op.into()),
@@ -276,7 +279,7 @@ pub enum Postfix<'s> {
     None,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum State {
     ExpectTerm,
     ExpectOperator,
@@ -353,10 +356,13 @@ fn parse_integer(s: &str) -> Result<i64, ParseIntError> {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use test_case::test_case;
 
-    use super::{ParseContext, Parser, Postfix, Prefix};
+    use super::{ParseContext, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM};
     use crate::{
+        error::ParseErrorKind,
         operator::{
             BinaryOperator, Fixity, LeftDelimiter, Precedence, RightDelimiter, UnaryOperator,
         },
@@ -417,5 +423,23 @@ mod tests {
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
         Ok(())
+    }
+
+    #[test_case("1 )", &[(ParseErrorKind::UnmatchedRightDelimiter, 2..3)] ; "unmatched right paren" )]
+    #[test_case("1 +", &[(ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 3..3)] ; "end of input" )]
+    #[test_case("(5 5", &[
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_OPERATOR }, 3..4),
+        (ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 4..4),
+        (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
+    ] ; "multiple errors")]
+    fn parse_expression_fail(input: &str, expected: &[(ParseErrorKind, Range<usize>)]) {
+        let actual = Parser::new(input, SimpleExprContext)
+            .parse()
+            .unwrap_err()
+            .errors
+            .into_iter()
+            .map(|err| (err.kind, Range::from(err.span)))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 }

@@ -10,7 +10,7 @@ pub struct ParseErrors {
 impl fmt::Display for ParseErrors {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.errors.len() == 1 {
-            f.write_str("Encountered 1 error:")?;
+            f.write_str("Encountered 1 error:\n")?;
         } else {
             writeln!(f, "Encountered {} errors:", self.errors.len())?;
         }
@@ -34,7 +34,7 @@ pub struct ParseError {
     pub kind: ParseErrorKind,
 }
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ParseErrorKind {
     #[error("Unexpected end of input (expected {expected})")]
     EndOfInput { expected: &'static str },
@@ -54,7 +54,7 @@ pub enum ParseErrorKind {
     OperatorWithBasePrecedence,
 }
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ParseIntError {
     #[error("Empty string")]
     Empty,

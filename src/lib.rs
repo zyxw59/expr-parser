@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, ops::Range};
 
 pub mod error;
 pub mod expression;
@@ -18,6 +18,21 @@ impl Span {
         Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
+        }
+    }
+}
+
+impl From<Span> for Range<usize> {
+    fn from(span: Span) -> Self {
+        span.start..span.end
+    }
+}
+
+impl From<Range<usize>> for Span {
+    fn from(range: Range<usize>) -> Self {
+        Span {
+            start: range.start,
+            end: range.end,
         }
     }
 }
