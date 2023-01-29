@@ -85,6 +85,13 @@ impl<'s> LeftDelimiter<'s> {
             token: self.token,
         }
     }
+
+    pub fn into_delimiter_operator(self) -> UnaryOperator<'s> {
+        UnaryOperator {
+            precedence: Precedence::Base,
+            token: self.token
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

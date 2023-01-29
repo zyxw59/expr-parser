@@ -78,6 +78,12 @@ where
                     self.stack.push(StackElement::Delimiter(delim));
                     self.state = State::ExpectTerm;
                 }
+                Prefix::DelimiterOperator(delim) => {
+                    self.stack.push(StackElement::Delimiter(delim));
+                    let un_op = delim.into_delimiter_operator();
+                    self.stack.push(StackElement::UnaryOperator(un_op));
+                    self.state = State::ExpectTerm;
+                }
                 Prefix::UnaryOperator(un_op) => {
                     self.stack.push(StackElement::UnaryOperator(un_op));
                     self.state = State::ExpectTerm;
@@ -268,6 +274,9 @@ pub trait ParseContext {
 pub enum Prefix<'s> {
     UnaryOperator(operator::UnaryOperator<'s>),
     Delimiter(operator::LeftDelimiter<'s>),
+    /// A combination of a delimiter and a unary operator which is applied to the contents of the
+    /// delimited group. This allows for different delimiters to have different behavior.
+    DelimiterOperator(operator::LeftDelimiter<'s>),
     None,
 }
 
@@ -376,6 +385,7 @@ mod tests {
             match token.as_str() {
                 "-" => Prefix::UnaryOperator(UnaryOperator::new(Precedence::Multiplicative, token)),
                 "(" => Prefix::Delimiter(LeftDelimiter::new(token)),
+                "[" => Prefix::DelimiterOperator(LeftDelimiter::new(token)),
                 _ => Prefix::None,
             }
         }
@@ -400,13 +410,16 @@ mod tests {
                 )),
                 "!" => Postfix::PostfixOperator(UnaryOperator::new(Precedence::Exponential, token)),
                 "(" => Postfix::LeftDelimiter(LeftDelimiter::new(token)),
-                ")" => Postfix::RightDelimiter(RightDelimiter::new(token)),
+                ")" | "]" => Postfix::RightDelimiter(RightDelimiter::new(token)),
                 _ => Postfix::None,
             }
         }
 
         fn match_delimiters<'s>(&self, left: LeftDelimiter<'s>, right: RightDelimiter<'s>) -> bool {
-            matches!((left.token().as_str(), right.token().as_str()), ("(", ")"))
+            matches!(
+                (left.token().as_str(), right.token().as_str()),
+                ("(", ")") | ("[", "]")
+            )
         }
     }
 
@@ -414,6 +427,7 @@ mod tests {
     #[test_case("sin(max(5/2, 3)) / 3 * pi", "sin max 5 2 / 3 , ( ( 3 / pi *" ; "with functions" )]
     #[test_case("2^3!", "2 3 ! ^" ; "postfix operators" )]
     #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
+    #[test_case("[1, (2, 3), 4]", "1 2 3 , , 4 , [" ; "delimiter operators" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = Parser::new(input, SimpleExprContext)
             .parse()?
@@ -432,6 +446,9 @@ mod tests {
         (ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 4..4),
         (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
     ] ; "multiple errors")]
+    #[test_case("[ 1 )", &[
+        (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
+    ] ; "mismatched delimiters" )]
     fn parse_expression_fail(input: &str, expected: &[(ParseErrorKind, Range<usize>)]) {
         let actual = Parser::new(input, SimpleExprContext)
             .parse()
