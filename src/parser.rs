@@ -44,10 +44,10 @@ where
             match op {
                 StackElement::BinaryOperator(bin_op) => self.queue.push_back(bin_op.into()),
                 StackElement::UnaryOperator(un_op) => self.queue.push_back(un_op.into()),
-                StackElement::Delimiter(delim) => errors.push(ParseError::spanned(
-                    ParseErrorKind::UnmatchedLeftDelimiter,
-                    delim.token().span(),
-                )),
+                StackElement::Delimiter(delim) => errors.push(ParseError {
+                    kind: ParseErrorKind::UnmatchedLeftDelimiter,
+                    span: delim.token().span(),
+                }),
             }
         }
         if errors.is_empty() {
@@ -87,8 +87,10 @@ where
             },
             TokenKind::Integer => {
                 self.state = State::ExpectOperator;
-                let int = parse_integer(token.as_str())
-                    .map_err(|e| ParseError::spanned(e, token.span()))?;
+                let int = parse_integer(token.as_str()).map_err(|e| ParseError {
+                    kind: e.into(),
+                    span: token.span(),
+                })?;
                 self.queue
                     .push_back(token.to_expression(ExpressionKind::Integer(int)));
             }
@@ -104,10 +106,10 @@ where
             }
             TokenKind::UnterminatedString => {
                 self.state = State::ExpectOperator;
-                return Err(ParseError::spanned(
-                    ParseErrorKind::UnterminatedString,
-                    token.span(),
-                ));
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnterminatedString,
+                    span: token.span(),
+                });
             }
         }
         Ok(())
@@ -138,22 +140,22 @@ where
                 }
                 Postfix::None => {
                     self.state = State::ExpectTerm;
-                    Err(ParseError::spanned(
-                        ParseErrorKind::UnexpectedToken {
+                    Err(ParseError {
+                        kind: ParseErrorKind::UnexpectedToken {
                             expected: EXPECT_OPERATOR,
                         },
-                        token.span(),
-                    ))
+                        span: token.span(),
+                    })
                 }
             },
             _ => {
                 self.state = State::ExpectTerm;
-                Err(ParseError::spanned(
-                    ParseErrorKind::UnexpectedToken {
+                Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
                         expected: EXPECT_OPERATOR,
                     },
-                    token.span(),
-                ))
+                    span: token.span(),
+                })
             }
         }
     }
@@ -169,12 +171,12 @@ where
                     if self.context.match_delimiters(left, right) {
                         return Ok(());
                     } else {
-                        return Err(ParseError::spanned(
-                            ParseErrorKind::MismatchedDelimiter {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::MismatchedDelimiter {
                                 opening: left.token().span(),
                             },
-                            right.token().span(),
-                        ));
+                            span: right.token().span(),
+                        });
                     }
                 }
                 StackElement::UnaryOperator(un_op) => {
@@ -185,10 +187,10 @@ where
                 }
             }
         }
-        Err(ParseError::spanned(
-            ParseErrorKind::UnmatchedRightDelimiter,
-            right.token().span(),
-        ))
+        Err(ParseError {
+            kind: ParseErrorKind::UnmatchedRightDelimiter,
+            span: right.token().span(),
+        })
     }
 
     fn process_binary_operator(
@@ -222,10 +224,10 @@ where
                 StackElement::BinaryOperator(prev) => self.queue.push_back(prev.into()),
                 StackElement::UnaryOperator(prev) => self.queue.push_back(prev.into()),
                 StackElement::Delimiter(_) => {
-                    return Err(ParseError::spanned(
-                        ParseErrorKind::OperatorWithBasePrecedence,
+                    return Err(ParseError {
+                        kind: ParseErrorKind::OperatorWithBasePrecedence,
                         span,
-                    ))
+                    })
                 }
             }
         }
@@ -238,13 +240,13 @@ where
 
     fn end_of_input(&self, expected: &'static str) -> ParseError {
         let len = self.source().len();
-        ParseError::spanned(
-            ParseErrorKind::EndOfInput { expected },
-            Span {
+        ParseError {
+            kind: ParseErrorKind::EndOfInput { expected },
+            span: Span {
                 start: len,
                 end: len,
             },
-        )
+        }
     }
 }
 

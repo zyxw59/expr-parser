@@ -30,20 +30,8 @@ impl From<Vec<ParseError>> for ParseErrors {
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("Parse error at {span}: {kind}")]
 pub struct ParseError {
-    span: Span,
-    kind: ParseErrorKind,
-}
-
-impl ParseError {
-    pub fn spanned<E>(error: E, span: Span) -> Self
-    where
-        ParseErrorKind: From<E>,
-    {
-        ParseError {
-            span,
-            kind: error.into(),
-        }
-    }
+    pub span: Span,
+    pub kind: ParseErrorKind,
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
