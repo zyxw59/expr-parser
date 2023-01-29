@@ -1,17 +1,17 @@
-use crate::{operator, Span};
+use crate::{operator, token::Token};
 
 #[derive(Clone, Copy, Debug)]
-pub struct Expression<'a> {
-    pub kind: ExpressionKind,
-    pub span: Span,
-    pub source: &'a str,
+pub struct Expression<'s> {
+    pub kind: ExpressionKind<'s>,
+    pub token: Token<'s>,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum ExpressionKind {
-    BinaryOperator(operator::BinaryOperator),
-    UnaryOperator(operator::UnaryOperator),
+pub enum ExpressionKind<'s> {
+    BinaryOperator(operator::BinaryOperator<'s>),
+    UnaryOperator(operator::UnaryOperator<'s>),
     Integer(i64),
     Float(f64),
     String,
+    Variable,
 }

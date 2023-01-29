@@ -1,6 +1,11 @@
+use std::fmt;
+
 use unicode_xid::UnicodeXID;
 
-use crate::Span;
+use crate::{
+    expression::{Expression, ExpressionKind},
+    Span,
+};
 
 pub struct Tokenizer<'s> {
     /// The full source string
@@ -15,6 +20,10 @@ impl<'s> Tokenizer<'s> {
             source,
             remainder: source,
         }
+    }
+
+    pub fn source(&self) -> &'s str {
+        self.source
     }
 
     pub fn next_token(&mut self) -> Option<Token<'s>> {
@@ -94,10 +103,6 @@ impl<'s> Tokenizer<'s> {
         TokenKind::UnterminatedString
     }
 
-    fn peek(&self) -> Option<char> {
-        self.remainder.chars().next()
-    }
-
     fn next(&mut self) -> Option<char> {
         let mut it = self.remainder.chars();
         let val = it.next();
@@ -157,6 +162,16 @@ impl<'s> Token<'s> {
 
     pub fn kind(&self) -> TokenKind {
         self.kind
+    }
+
+    pub fn to_expression(&self, kind: ExpressionKind<'s>) -> Expression<'s> {
+        Expression { kind, token: *self }
+    }
+}
+
+impl<'s> fmt::Display for Token<'s> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(self.as_str(), f)
     }
 }
 
@@ -251,7 +266,7 @@ fn is_singleton_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{Span, TokenKind, Tokenizer};
+    use super::{TokenKind, Tokenizer};
 
     #[test_case("abc", TokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", TokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]

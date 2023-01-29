@@ -1,5 +1,6 @@
 use std::fmt;
 
+pub mod error;
 pub mod expression;
 pub mod operator;
 pub mod parser;
