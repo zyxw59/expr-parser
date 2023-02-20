@@ -40,9 +40,10 @@ impl<'s> Tokenizer<'s> {
         let start = self.next_index();
         let ch = self.next()?;
         let kind = match ch.into() {
-            CharKind::Digit => self.lex_number(),
+            CharKind::Digit => self.lex_number(false),
             CharKind::Singleton => TokenKind::Tag,
             CharKind::DoubleQuote => self.lex_string(),
+            CharKind::Dot if self.next_if(is_number_start_char).is_some() => self.lex_number(true),
             kind => {
                 self.advance_while(|ch| kind.can_be_followed_by(ch));
                 TokenKind::Tag
@@ -56,10 +57,17 @@ impl<'s> Tokenizer<'s> {
         })
     }
 
-    fn lex_number(&mut self) -> TokenKind {
-        let mut kind = TokenKind::Integer;
+    fn lex_number(&mut self, has_dot: bool) -> TokenKind {
+        let mut kind = if has_dot {
+            TokenKind::Float
+        } else {
+            TokenKind::Integer
+        };
         self.advance_while(is_number_char);
-        if self.next_if(|ch| ch == '.').is_some() && self.next_if(is_number_start_char).is_some() {
+        if !has_dot
+            && self.next_if(|ch| ch == '.').is_some()
+            && self.next_if(is_number_start_char).is_some()
+        {
             kind = TokenKind::Float;
             self.advance_while(is_number_char);
         }
@@ -203,6 +211,8 @@ enum CharKind {
     Singleton,
     /// `<`, `=`, `>`
     Comparison,
+    /// `.`
+    Dot,
     /// Whitespace isn't part of any token
     Whitespace,
     /// Any character not covered by the above categories
@@ -219,7 +229,7 @@ impl CharKind {
             CharKind::Singleton => false,
             CharKind::Comparison => is_comparison_char(ch),
             CharKind::Whitespace => ch.is_whitespace(),
-            CharKind::Other => matches!(ch.into(), CharKind::Comparison | CharKind::Other),
+            CharKind::Dot | CharKind::Other => is_other_continuation_char(ch),
         }
     }
 }
@@ -228,6 +238,7 @@ impl From<char> for CharKind {
     fn from(ch: char) -> CharKind {
         match ch {
             '"' => CharKind::DoubleQuote,
+            '.' => CharKind::Dot,
             ch if is_singleton_char(ch) => CharKind::Singleton,
             ch if is_comparison_char(ch) => CharKind::Comparison,
             ch if is_number_start_char(ch) => CharKind::Digit,
@@ -268,6 +279,14 @@ fn is_singleton_char(ch: char) -> bool {
     ch == '(' || ch == ')'
 }
 
+#[inline]
+fn is_other_continuation_char(ch: char) -> bool {
+    matches!(
+        ch.into(),
+        CharKind::Comparison | CharKind::Dot | CharKind::Other
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use test_case::test_case;
@@ -282,9 +301,14 @@ mod tests {
     #[test_case("<>", TokenKind::Tag, "<>" ; "comparison tag")]
     #[test_case("=-", TokenKind::Tag, "=" ; "comparison followed by other char")]
     #[test_case("-=", TokenKind::Tag, "-=" ; "other char followed by comparison")]
+    #[test_case("..", TokenKind::Tag, ".." ; "tag starting with dot")]
+    #[test_case("..123", TokenKind::Tag, ".." ; "tag starting with dot followed by number")]
     #[test_case("123", TokenKind::Integer, "123" ; "integer")]
     #[test_case("1_234", TokenKind::Integer, "1_234" ; "integer with underscores")]
     #[test_case("1.234", TokenKind::Float, "1.234" ; "simple float")]
+    #[test_case(".234", TokenKind::Float, ".234" ; "float with no integer")]
+    #[test_case("1.234.5", TokenKind::Float, "1.234" ; "float with extra dot")]
+    #[test_case(".234.5", TokenKind::Float, ".234" ; "float with no integer and extra dot")]
     #[test_case("1e1", TokenKind::Float, "1e1" ; "float exponential")]
     #[test_case("1e1.", TokenKind::Float, "1e1" ; "float exponential followed by dot")]
     #[test_case("1e", TokenKind::Integer, "1" ; "float incomplete exponential")]
