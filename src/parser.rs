@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::{borrow::Cow, collections::VecDeque};
 
 use crate::{
-    error::{ParseError, ParseErrorKind, ParseErrors, ParseIntError},
+    error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
     expression::{Expression, ExpressionKind},
     operator,
     token::{Token, TokenKind, Tokenizer},
@@ -105,8 +105,12 @@ where
             }
             TokenKind::Float => {
                 self.state = State::ExpectOperator;
-                // parse float
-                todo!();
+                let float = parse_float(token.as_str()).map_err(|e| ParseError {
+                    kind: e.into(),
+                    span: token.span(),
+                })?;
+                self.queue
+                    .push_back(token.to_expression(ExpressionKind::Float(float)));
             }
             TokenKind::String => {
                 self.state = State::ExpectOperator;
@@ -361,6 +365,19 @@ fn parse_integer(s: &str) -> Result<i64, ParseIntError> {
         }
     }
     Ok(x)
+}
+
+fn parse_float(s: &str) -> Result<f64, ParseFloatError> {
+    let mut s = Cow::Borrowed(s);
+    if s.contains('_') {
+        // float parsing is really hard, and writing our own float parser to do this in a zero-copy
+        // way is not worth it.
+        s.to_mut().retain(|c| c != '_');
+    }
+    if s.is_empty() {
+        return Err(ParseFloatError::Empty);
+    }
+    s.parse().map_err(|_| ParseFloatError::Invalid)
 }
 
 #[cfg(test)]

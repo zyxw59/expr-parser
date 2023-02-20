@@ -42,6 +42,8 @@ pub enum ParseErrorKind {
     UnexpectedToken { expected: &'static str },
     #[error("Invalid integer literal: {0}")]
     ParseInt(#[from] ParseIntError),
+    #[error("Invalid float literal: {0}")]
+    ParseFloat(#[from] ParseFloatError),
     #[error("Unterminated string literal")]
     UnterminatedString,
     #[error("Mismatched closing delimiter (opening {opening})")]
@@ -60,4 +62,12 @@ pub enum ParseIntError {
     Empty,
     #[error("Integer literal too large")]
     Overflow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ParseFloatError {
+    #[error("Empty string")]
+    Empty,
+    #[error("Invalid float literal")]
+    Invalid,
 }
