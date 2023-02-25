@@ -1,8 +1,8 @@
 use std::{fmt, ops::Range};
 
 pub mod error;
-pub mod expression;
 pub mod evaluate;
+pub mod expression;
 pub mod operator;
 pub mod parser;
 pub mod simple_contexts;

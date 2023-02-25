@@ -55,9 +55,7 @@ where
             ExpressionKind::Integer(value) => {
                 stack.push(context.evaluate_integer(expr.token, value)?)
             }
-            ExpressionKind::Float(value) => {
-                stack.push(context.evaluate_float(expr.token, value)?)
-            }
+            ExpressionKind::Float(value) => stack.push(context.evaluate_float(expr.token, value)?),
             ExpressionKind::String => {
                 stack.push(context.evaluate_string(expr.token, expr.token.as_str())?)
             }
