@@ -336,12 +336,14 @@ pub trait Delimiter {
     fn matches(&self, other: &Self) -> bool;
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum Prefix<D, U> {
     UnaryOperator { precedence: Precedence, operator: U },
     Delimiter { delimiter: D, operator: Option<U> },
     None,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub enum Postfix<D, B, U> {
     BinaryOperator { fixity: Fixity, operator: B },
     PostfixOperator { precedence: Precedence, operator: U },

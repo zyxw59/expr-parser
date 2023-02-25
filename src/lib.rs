@@ -5,6 +5,7 @@ pub mod expression;
 pub mod evaluate;
 pub mod operator;
 pub mod parser;
+pub mod simple_contexts;
 pub mod token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
