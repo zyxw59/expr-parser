@@ -2,10 +2,7 @@ use std::fmt;
 
 use unicode_xid::UnicodeXID;
 
-use crate::{
-    expression::{Expression, ExpressionKind},
-    Span,
-};
+use crate::Span;
 
 pub struct Tokenizer<'s> {
     /// The full source string
@@ -176,10 +173,6 @@ impl<'s> Token<'s> {
 
     pub fn kind(&self) -> TokenKind {
         self.kind
-    }
-
-    pub fn to_expression(&self, kind: ExpressionKind<'s>) -> Expression<'s> {
-        Expression { kind, token: *self }
     }
 }
 
