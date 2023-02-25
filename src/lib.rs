@@ -1,6 +1,7 @@
 use std::{fmt, ops::Range};
 
 pub mod error;
+pub mod evaluate;
 pub mod expression;
 pub mod operator;
 pub mod parser;
