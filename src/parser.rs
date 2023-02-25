@@ -332,6 +332,26 @@ pub trait ParseContext<'s> {
     ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator>;
 }
 
+impl<'s, C> ParseContext<'s> for &'_ C
+where
+    C: ParseContext<'s>,
+{
+    type Delimiter = C::Delimiter;
+    type BinaryOperator = C::BinaryOperator;
+    type UnaryOperator = C::UnaryOperator;
+
+    fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::UnaryOperator> {
+        C::get_prefix(self, token)
+    }
+
+    fn get_postfix(
+        &self,
+        token: Token<'s>,
+    ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
+        C::get_postfix(self, token)
+    }
+}
+
 pub trait Delimiter {
     fn matches(&self, other: &Self) -> bool;
 }
@@ -465,14 +485,12 @@ mod tests {
 
     use test_case::test_case;
 
-    use super::{Delimiter, ParseContext, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM};
+    use super::{Delimiter, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM};
     use crate::{
         error::ParseErrorKind,
         operator::{Fixity, Precedence},
-        token::Token,
+        simple_contexts::MapParseContext,
     };
-
-    struct SimpleExprContext;
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum SimpleDelimiter {
@@ -486,69 +504,64 @@ mod tests {
         }
     }
 
-    impl<'s> ParseContext<'s> for SimpleExprContext {
-        type Delimiter = SimpleDelimiter;
-        type BinaryOperator = &'s str;
-        type UnaryOperator = &'s str;
-
-        fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::UnaryOperator> {
-            let s = token.as_str();
-            match s {
-                "-" => Prefix::UnaryOperator {
-                    precedence: Precedence::Multiplicative,
-                    operator: s,
-                },
-                "(" => Prefix::Delimiter {
-                    delimiter: SimpleDelimiter::Paren,
-                    operator: None,
-                },
-                "[" => Prefix::Delimiter {
-                    delimiter: SimpleDelimiter::SquareBracket,
-                    operator: Some(s),
-                },
-                _ => Prefix::None,
-            }
-        }
-
-        fn get_postfix(
-            &self,
-            token: Token<'s>,
-        ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
-            let s = token.as_str();
-            match s {
-                "," => Postfix::BinaryOperator {
-                    fixity: Fixity::Left(Precedence::Comma),
-                    operator: s,
-                },
-                "+" | "-" => Postfix::BinaryOperator {
-                    fixity: Fixity::Left(Precedence::Additive),
-                    operator: s,
-                },
-                "*" | "/" => Postfix::BinaryOperator {
-                    fixity: Fixity::Left(Precedence::Multiplicative),
-                    operator: s,
-                },
-                "^" => Postfix::BinaryOperator {
-                    fixity: Fixity::Right(Precedence::Exponential),
-                    operator: s,
-                },
-                "!" => Postfix::PostfixOperator {
-                    precedence: Precedence::Exponential,
-                    operator: s,
-                },
-                "(" => Postfix::LeftDelimiter {
-                    delimiter: SimpleDelimiter::Paren,
-                    operator: s,
-                },
-                ")" => Postfix::RightDelimiter {
-                    delimiter: SimpleDelimiter::Paren,
-                },
-                "]" => Postfix::RightDelimiter {
-                    delimiter: SimpleDelimiter::SquareBracket,
-                },
-                _ => Postfix::None,
-            }
-        }
+    lazy_static::lazy_static! {
+        static ref PARSE_CONTEXT: MapParseContext<SimpleDelimiter, &'static str, &'static str> =
+            MapParseContext {
+                prefixes: [
+                    ("-", Prefix::UnaryOperator {
+                        precedence: Precedence::Multiplicative,
+                        operator: "-",
+                    }),
+                    ("(", Prefix::Delimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                        operator: None,
+                    }),
+                    ("[", Prefix::Delimiter {
+                        delimiter: SimpleDelimiter::SquareBracket,
+                        operator: Some("["),
+                    }),
+                ].into_iter().collect(),
+                postfixes: [
+                    (",", Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Comma),
+                        operator: ",",
+                    }),
+                    ("+", Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Additive),
+                        operator: "+",
+                    }),
+                    ("-", Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Additive),
+                        operator: "-",
+                    }),
+                    ("*", Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Multiplicative),
+                        operator: "*",
+                    }),
+                    ("/", Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Multiplicative),
+                        operator: "/",
+                    }),
+                    ("^", Postfix::BinaryOperator {
+                        fixity: Fixity::Right(Precedence::Exponential),
+                        operator: "^",
+                    }),
+                    ("!", Postfix::PostfixOperator {
+                        precedence: Precedence::Exponential,
+                        operator: "!",
+                    }),
+                    ("(", Postfix::LeftDelimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                        operator: "(",
+                    }),
+                    (")", Postfix::RightDelimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                    }),
+                    ("]", Postfix::RightDelimiter {
+                        delimiter: SimpleDelimiter::SquareBracket,
+                    }),
+                ].into_iter().collect(),
+            };
     }
 
     #[test_case("3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3", "3 4 2 * 1 5 - 2 3 ^ ^ / +" ; "simple arithmetic" )]
@@ -557,7 +570,7 @@ mod tests {
     #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
     #[test_case("[1, (2, 3), 4]", "1 2 3 , , 4 , [" ; "delimiter operators" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = Parser::new(input, SimpleExprContext)
+        let actual = Parser::new(input, &*PARSE_CONTEXT)
             .parse()?
             .into_iter()
             .map(|expr| expr.token.as_str())
@@ -578,7 +591,7 @@ mod tests {
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
     ] ; "mismatched delimiters" )]
     fn parse_expression_fail(input: &str, expected: &[(ParseErrorKind, Range<usize>)]) {
-        let actual = Parser::new(input, SimpleExprContext)
+        let actual = Parser::new(input, &*PARSE_CONTEXT)
             .parse()
             .unwrap_err()
             .errors
