@@ -11,12 +11,16 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
+pub type ExpressionQueue<'s, C> = VecDeque<
+    Expression<'s, <C as ParseContext<'s>>::BinaryOperator, <C as ParseContext<'s>>::UnaryOperator>,
+>;
+
 pub struct Parser<'s, C: ParseContext<'s>> {
     tokenizer: Tokenizer<'s>,
     context: C,
     state: State,
-    stack: Stack<'s, C::Delimiter, C::Operator>,
-    queue: VecDeque<Expression<'s, C::Operator>>,
+    stack: Stack<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator>,
+    queue: ExpressionQueue<'s, C>,
 }
 
 impl<'s, C> Parser<'s, C>
@@ -33,7 +37,7 @@ where
         }
     }
 
-    pub fn parse(mut self) -> Result<VecDeque<Expression<'s, C::Operator>>, ParseErrors> {
+    pub fn parse(mut self) -> Result<ExpressionQueue<'s, C>, ParseErrors> {
         let mut errors = Vec::new();
         while !self.tokenizer.is_empty() {
             if let Err(err) = self.parse_next() {
@@ -82,7 +86,7 @@ where
                         token,
                         precedence: Precedence::Base,
                         delimiter: Some(delimiter),
-                        operator,
+                        operator: StackOperator::from_unary_option(operator),
                     });
                     self.state = State::ExpectTerm;
                 }
@@ -94,7 +98,7 @@ where
                         token,
                         precedence,
                         delimiter: None,
-                        operator: Some(operator),
+                        operator: StackOperator::Unary(operator),
                     });
                     self.state = State::ExpectTerm;
                 }
@@ -177,7 +181,7 @@ where
                         token,
                         precedence: Precedence::Base,
                         delimiter: Some(delimiter),
-                        operator: Some(operator),
+                        operator: StackOperator::Unary(operator),
                     });
                     Ok(())
                 }
@@ -235,7 +239,7 @@ where
         &mut self,
         token: Token<'s>,
         fixity: Fixity,
-        operator: C::Operator,
+        operator: C::BinaryOperator,
     ) -> Result<(), ParseError> {
         self.state = State::ExpectTerm;
         self.pop_while_lower_precedence(fixity, token.span())?;
@@ -243,7 +247,7 @@ where
             token,
             precedence: fixity.precedence(),
             delimiter: None,
-            operator: Some(operator),
+            operator: StackOperator::Binary(operator),
         });
         Ok(())
     }
@@ -252,14 +256,14 @@ where
         &mut self,
         token: Token<'s>,
         precedence: Precedence,
-        operator: C::Operator,
+        operator: C::UnaryOperator,
     ) -> Result<(), ParseError> {
         self.state = State::ExpectOperator;
         let fixity = Fixity::Right(precedence);
         self.pop_while_lower_precedence(fixity, token.span())?;
         self.queue.push_back(Expression {
             token,
-            kind: ExpressionKind::Operator(operator),
+            kind: ExpressionKind::UnaryOperator(operator),
         });
         Ok(())
     }
@@ -281,15 +285,20 @@ where
     /// delimiter, the provided function will be called.
     fn push_stack_element_to_queue(
         &mut self,
-        el: StackElement<'s, C::Delimiter, C::Operator>,
+        el: StackElement<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator>,
         delimiter_predicate: impl FnOnce(Token<'s>, C::Delimiter) -> Result<(), ParseError>,
     ) -> Option<Result<(), ParseError>> {
-        if let Some(op) = el.operator {
-            self.queue.push_back(Expression {
+        match el.operator {
+            StackOperator::Unary(op) => self.queue.push_back(Expression {
                 token: el.token,
-                kind: ExpressionKind::Operator(op),
-            });
-        }
+                kind: ExpressionKind::UnaryOperator(op),
+            }),
+            StackOperator::Binary(op) => self.queue.push_back(Expression {
+                token: el.token,
+                kind: ExpressionKind::BinaryOperator(op),
+            }),
+            StackOperator::None => {}
+        };
         el.delimiter
             .map(|delim| delimiter_predicate(el.token, delim))
     }
@@ -312,27 +321,31 @@ where
 
 pub trait ParseContext<'s> {
     type Delimiter: Delimiter;
-    type Operator;
+    type BinaryOperator;
+    type UnaryOperator;
 
-    fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::Operator>;
+    fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::UnaryOperator>;
 
-    fn get_postfix(&self, token: Token<'s>) -> Postfix<Self::Delimiter, Self::Operator>;
+    fn get_postfix(
+        &self,
+        token: Token<'s>,
+    ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator>;
 }
 
 pub trait Delimiter {
     fn matches(&self, other: &Self) -> bool;
 }
 
-pub enum Prefix<D, O> {
-    UnaryOperator { precedence: Precedence, operator: O },
-    Delimiter { delimiter: D, operator: Option<O> },
+pub enum Prefix<D, U> {
+    UnaryOperator { precedence: Precedence, operator: U },
+    Delimiter { delimiter: D, operator: Option<U> },
     None,
 }
 
-pub enum Postfix<D, O> {
-    BinaryOperator { fixity: Fixity, operator: O },
-    PostfixOperator { precedence: Precedence, operator: O },
-    LeftDelimiter { delimiter: D, operator: O },
+pub enum Postfix<D, B, U> {
+    BinaryOperator { fixity: Fixity, operator: B },
+    PostfixOperator { precedence: Precedence, operator: U },
+    LeftDelimiter { delimiter: D, operator: U },
     RightDelimiter { delimiter: D },
     None,
 }
@@ -344,29 +357,29 @@ enum State {
 }
 
 #[derive(Clone, Debug)]
-struct Stack<'s, D, O>(Vec<StackElement<'s, D, O>>);
+struct Stack<'s, D, B, U>(Vec<StackElement<'s, D, B, U>>);
 
-impl<'s, D, O> Default for Stack<'s, D, O> {
+impl<'s, D, B, U> Default for Stack<'s, D, B, U> {
     fn default() -> Self {
         Stack(Default::default())
     }
 }
 
-impl<'s, D, O> Stack<'s, D, O> {
+impl<'s, D, B, U> Stack<'s, D, B, U> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<'s, D, O>) {
+    fn push(&mut self, element: StackElement<'s, D, B, U>) {
         self.0.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<'s, D, O>> {
+    fn pop(&mut self) -> Option<StackElement<'s, D, B, U>> {
         self.0.pop()
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
-    fn pop_if_lower_precedence(&mut self, fixity: Fixity) -> Option<StackElement<'s, D, O>> {
+    fn pop_if_lower_precedence(&mut self, fixity: Fixity) -> Option<StackElement<'s, D, B, U>> {
         if match fixity {
             Fixity::Left(prec) => prec <= self.precedence(),
             Fixity::Right(prec) => prec < self.precedence(),
@@ -386,16 +399,32 @@ impl<'s, D, O> Stack<'s, D, O> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct StackElement<'s, D, O> {
+struct StackElement<'s, D, B, U> {
     token: Token<'s>,
     precedence: Precedence,
     delimiter: Option<D>,
-    operator: Option<O>,
+    operator: StackOperator<B, U>,
 }
 
-impl<'s, D, O> StackElement<'s, D, O> {
+impl<'s, D, B, U> StackElement<'s, D, B, U> {
     fn precedence(&self) -> Precedence {
         self.precedence
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StackOperator<B, U> {
+    None,
+    Binary(B),
+    Unary(U),
+}
+
+impl<B, U> StackOperator<B, U> {
+    fn from_unary_option(option: Option<U>) -> Self {
+        match option {
+            None => Self::None,
+            Some(op) => Self::Unary(op),
+        }
     }
 }
 
@@ -457,9 +486,10 @@ mod tests {
 
     impl<'s> ParseContext<'s> for SimpleExprContext {
         type Delimiter = SimpleDelimiter;
-        type Operator = &'s str;
+        type BinaryOperator = &'s str;
+        type UnaryOperator = &'s str;
 
-        fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::Operator> {
+        fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::UnaryOperator> {
             let s = token.as_str();
             match s {
                 "-" => Prefix::UnaryOperator {
@@ -478,7 +508,10 @@ mod tests {
             }
         }
 
-        fn get_postfix(&self, token: Token<'s>) -> Postfix<Self::Delimiter, Self::Operator> {
+        fn get_postfix(
+            &self,
+            token: Token<'s>,
+        ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
             let s = token.as_str();
             match s {
                 "," => Postfix::BinaryOperator {
