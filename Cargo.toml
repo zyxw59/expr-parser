@@ -2,6 +2,8 @@
 name = "expr-parser"
 version = "0.1.0"
 edition = "2021"
+authors = ["emily Crandall Fleischman <emilycf@mit.edu>"]
+license = "MIT"
 
 [dependencies]
 itertools = "0.10.5"
