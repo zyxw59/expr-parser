@@ -89,4 +89,6 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
+#[error("variable not found: {0}")]
 pub struct VariableNotFound<'s>(pub &'s str);
