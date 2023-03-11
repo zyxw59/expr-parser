@@ -553,7 +553,10 @@ mod tests {
     #[test_case("sin(max(5/2, 3)) / 3 * pi", "sin max 5 2 / 3 , ( ( 3 / pi *" ; "with functions" )]
     #[test_case("2^3!", "2 3 ! ^" ; "postfix operators" )]
     #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
-    #[test_case("[1, (2, 3), 4]", "1 2 3 , , 4 , [" ; "delimiter operators" )]
+    #[test_case("[1, 2, 3, 4]", "1 2 , 3 , 4 , [" ; "delimiter operators" )]
+    #[test_case("[1, (2, 3), 4]", "1 2 3 , , 4 , [" ; "nested delimiter operators" )]
+    #[test_case("[ ]", "[" ; "empty list" )]
+    #[test_case("f()", "f (" ; "empty function call" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = Parser::new(input, SimpleExprContext)
             .parse()?
