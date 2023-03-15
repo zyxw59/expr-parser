@@ -14,4 +14,5 @@ pub enum ExpressionKind<B, U> {
     Float(f64),
     String,
     Variable,
+    Null,
 }

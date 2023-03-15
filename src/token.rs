@@ -29,7 +29,7 @@ impl<'s> Tokenizer<'s> {
         self.remainder.is_empty()
     }
 
-    pub fn next_token(&mut self) -> Option<Token<'s>> {
+    pub fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)> {
         // skip whitespace
         if self.next_if(char::is_whitespace).is_some() {
             self.advance_while(char::is_whitespace);
@@ -47,11 +47,13 @@ impl<'s> Tokenizer<'s> {
             }
         };
         let end = self.next_index();
-        Some(Token {
-            span: Span { start, end },
-            source: self.source,
+        Some((
+            Token {
+                span: Span { start, end },
+                source: self.source,
+            },
             kind,
-        })
+        ))
     }
 
     fn lex_number(&mut self, has_dot: bool) -> TokenKind {
@@ -155,10 +157,13 @@ impl<'s> Tokenizer<'s> {
 pub struct Token<'s> {
     span: Span,
     source: &'s str,
-    kind: TokenKind,
 }
 
 impl<'s> Token<'s> {
+    pub fn new(span: Span, source: &'s str) -> Self {
+        Token { span, source }
+    }
+
     pub fn span(&self) -> Span {
         self.span
     }
@@ -169,10 +174,6 @@ impl<'s> Token<'s> {
 
     pub fn as_str(&self) -> &'s str {
         &self.source[self.span.into_range()]
-    }
-
-    pub fn kind(&self) -> TokenKind {
-        self.kind
     }
 }
 
@@ -312,7 +313,7 @@ mod tests {
     #[test_case("(((", TokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: TokenKind, as_str: &str) {
         let actual = Tokenizer::new(source).next_token().unwrap();
-        assert_eq!(actual.kind, kind);
-        assert_eq!(actual.as_str(), as_str);
+        assert_eq!(actual.1, kind);
+        assert_eq!(actual.0.as_str(), as_str);
     }
 }
