@@ -1,0 +1,26 @@
+name: Rust
+
+on:
+  push
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: rustup toolchain install
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+        components: clippy,rustfmt
+    - name: Format
+      run: cargo fmt --check
+    - name: Clippy
+      run: cargo clippy --verbose --all-targets
+    - name: Run tests
+      run: cargo test --verbose
