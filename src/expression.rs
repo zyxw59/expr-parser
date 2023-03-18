@@ -1,16 +1,18 @@
 use crate::token::Token;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Expression<'s, O> {
-    pub kind: ExpressionKind<O>,
+pub struct Expression<'s, B, U> {
+    pub kind: ExpressionKind<B, U>,
     pub token: Token<'s>,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum ExpressionKind<O> {
-    Operator(O),
+pub enum ExpressionKind<B, U> {
+    BinaryOperator(B),
+    UnaryOperator(U),
     Integer(i64),
     Float(f64),
     String,
     Variable,
+    Null,
 }
