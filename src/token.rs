@@ -4,56 +4,31 @@ use unicode_xid::UnicodeXID;
 
 use crate::Span;
 
-pub struct Tokenizer<'s> {
+pub trait Tokenizer<'s> {
+    /// Returns the full source string
+    fn source(&self) -> &'s str;
+
+    /// Returns whether the remainder of the input is empty (i.e. the tokenizer has run to
+    /// completion)
+    fn is_empty(&self) -> bool;
+
+    /// Returns the next token in the input, or `None` if there is no more input.
+    fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)>;
+}
+
+pub struct SimpleTokenizer<'s> {
     /// The full source string
     source: &'s str,
     /// The remainder of the input which has not been tokenized yet
     remainder: &'s str,
 }
 
-impl<'s> Tokenizer<'s> {
+impl<'s> SimpleTokenizer<'s> {
     pub fn new(source: &'s str) -> Self {
-        Tokenizer {
+        SimpleTokenizer {
             source,
             remainder: source,
         }
-    }
-
-    pub fn source(&self) -> &'s str {
-        self.source
-    }
-
-    /// Returns whether the remainder of the input is empty (i.e. the tokenizer has run to
-    /// completion)
-    pub fn is_empty(&self) -> bool {
-        self.remainder.is_empty()
-    }
-
-    pub fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)> {
-        // skip whitespace
-        if self.next_if(char::is_whitespace).is_some() {
-            self.advance_while(char::is_whitespace);
-        }
-        let start = self.next_index();
-        let ch = self.next()?;
-        let kind = match ch.into() {
-            CharKind::Digit => self.lex_number(false),
-            CharKind::Singleton => TokenKind::Tag,
-            CharKind::DoubleQuote => self.lex_string(),
-            CharKind::Dot if self.next_if(is_number_start_char).is_some() => self.lex_number(true),
-            kind => {
-                self.advance_while(|ch| kind.can_be_followed_by(ch));
-                TokenKind::Tag
-            }
-        };
-        let end = self.next_index();
-        Some((
-            Token {
-                span: Span { start, end },
-                source: self.source,
-            },
-            kind,
-        ))
     }
 
     fn lex_number(&mut self, has_dot: bool) -> TokenKind {
@@ -150,6 +125,43 @@ impl<'s> Tokenizer<'s> {
     /// there are no more characters.
     fn next_index(&self) -> usize {
         self.source.len() - self.remainder.len()
+    }
+}
+
+impl<'s> Tokenizer<'s> for SimpleTokenizer<'s> {
+    fn source(&self) -> &'s str {
+        self.source
+    }
+
+    fn is_empty(&self) -> bool {
+        self.remainder.is_empty()
+    }
+
+    fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)> {
+        // skip whitespace
+        if self.next_if(char::is_whitespace).is_some() {
+            self.advance_while(char::is_whitespace);
+        }
+        let start = self.next_index();
+        let ch = self.next()?;
+        let kind = match ch.into() {
+            CharKind::Digit => self.lex_number(false),
+            CharKind::Singleton => TokenKind::Tag,
+            CharKind::DoubleQuote => self.lex_string(),
+            CharKind::Dot if self.next_if(is_number_start_char).is_some() => self.lex_number(true),
+            kind => {
+                self.advance_while(|ch| kind.can_be_followed_by(ch));
+                TokenKind::Tag
+            }
+        };
+        let end = self.next_index();
+        Some((
+            Token {
+                span: Span { start, end },
+                source: self.source,
+            },
+            kind,
+        ))
     }
 }
 
@@ -285,7 +297,7 @@ fn is_other_continuation_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{TokenKind, Tokenizer};
+    use super::{SimpleTokenizer, TokenKind, Tokenizer};
 
     #[test_case("abc", TokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", TokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
@@ -312,7 +324,7 @@ mod tests {
     #[test_case(r#""abc\"\\\"abc"#, TokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
     #[test_case("(((", TokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: TokenKind, as_str: &str) {
-        let actual = Tokenizer::new(source).next_token().unwrap();
+        let actual = SimpleTokenizer::new(source).next_token().unwrap();
         assert_eq!(actual.1, kind);
         assert_eq!(actual.0.as_str(), as_str);
     }
