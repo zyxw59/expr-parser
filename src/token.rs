@@ -25,7 +25,7 @@ pub struct CharSetTokenizer<'s, C> {
     _marker: PhantomData<fn() -> C>,
 }
 
-pub trait CharSetTokenizerKind {
+pub trait CharSet {
     /// Categorize a character at the start of a potential token.
     fn categorize(c: char) -> Self;
 
@@ -42,7 +42,7 @@ pub trait CharSetTokenizerKind {
     fn end_of_input(self) -> Option<TokenKind>;
 }
 
-impl<'s, C: CharSetTokenizerKind> CharSetTokenizer<'s, C> {
+impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
     pub fn new(source: &'s str) -> Self {
         Self {
             source,
@@ -91,7 +91,7 @@ impl<'s, C: CharSetTokenizerKind> CharSetTokenizer<'s, C> {
     }
 }
 
-impl<'s, C: CharSetTokenizerKind> Tokenizer<'s> for CharSetTokenizer<'s, C> {
+impl<'s, C: CharSet> Tokenizer<'s> for CharSetTokenizer<'s, C> {
     fn source(&self) -> &'s str {
         self.source
     }
@@ -155,7 +155,7 @@ pub enum NumberState {
     Fractional,
 }
 
-impl CharSetTokenizerKind for SimpleCharSet {
+impl CharSet for SimpleCharSet {
     fn categorize(ch: char) -> Self {
         match ch {
             '"' => Self::String(false),
