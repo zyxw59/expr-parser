@@ -51,6 +51,7 @@ impl<'s, C: CharSetTokenizerKind> CharSetTokenizer<'s, C> {
         }
     }
 
+    /// Advance to the next input character.
     fn next(&mut self) -> Option<char> {
         let mut it = self.remainder.chars();
         let val = it.next();
@@ -95,13 +96,10 @@ impl<'s, C: CharSetTokenizerKind> Tokenizer<'s> for CharSetTokenizer<'s, C> {
         self.source
     }
 
-    /// Returns whether the remainder of the input is empty (i.e. the tokenizer has run to
-    /// completion)
     fn is_empty(&self) -> bool {
         self.remainder.is_empty()
     }
 
-    /// Returns the next token in the input, or `None` if there is no more input.
     fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)> {
         loop {
             let start = self.next_index();
@@ -356,7 +354,6 @@ mod tests {
     #[test_case("(((", TokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: TokenKind, as_str: &str) {
         let actual = SimpleTokenizer::new(source).next_token().unwrap();
-        assert_eq!(actual.0.as_str(), as_str);
-        assert_eq!(actual.1, kind);
+        assert_eq!((actual.0.as_str(), actual.1), (as_str, kind));
     }
 }
