@@ -39,10 +39,12 @@ jobs:
           toolchain: stable
       - name: Build Rust docs
         run: cargo doc --all-features --document-private-items
+        # .lock file has invalid permissions for github pages
+      - run: "rm target/doc/.lock || true"
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v1
         with:
-          # Upload entire repository
+          # Upload docs
           path: 'target/doc'
       - name: Deploy to GitHub Pages
         id: deployment
