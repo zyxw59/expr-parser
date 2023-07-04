@@ -15,21 +15,22 @@ pub type ExpressionQueue<'s, C> = VecDeque<
     Expression<'s, <C as ParseContext<'s>>::BinaryOperator, <C as ParseContext<'s>>::UnaryOperator>,
 >;
 
-pub struct Parser<'s, C: ParseContext<'s>> {
-    tokenizer: Tokenizer<'s>,
+pub struct Parser<'s, T, C: ParseContext<'s>> {
+    tokenizer: T,
     context: C,
     state: State,
     stack: Stack<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator>,
     queue: ExpressionQueue<'s, C>,
 }
 
-impl<'s, C> Parser<'s, C>
+impl<'s, T, C> Parser<'s, T, C>
 where
     C: ParseContext<'s>,
+    T: Tokenizer<'s>,
 {
-    pub fn new(source: &'s str, context: C) -> Self {
+    pub fn new(tokenizer: T, context: C) -> Self {
         Parser {
-            tokenizer: Tokenizer::new(source),
+            tokenizer,
             context,
             state: State::Initial,
             stack: Stack::new(),
@@ -513,7 +514,7 @@ mod tests {
     use crate::{
         error::ParseErrorKind,
         operator::{Fixity, Precedence},
-        token::Token,
+        token::{SimpleTokenizer, Token},
     };
 
     struct SimpleExprContext;
@@ -611,7 +612,7 @@ mod tests {
     #[test_case("f()", "f ) (" ; "empty function call" )]
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , ] , [" ; "trailing comma" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = Parser::new(input, SimpleExprContext)
+        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
             .parse()?
             .into_iter()
             .map(|expr| expr.token.as_str())
@@ -632,7 +633,7 @@ mod tests {
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
     ] ; "mismatched delimiters" )]
     fn parse_expression_fail(input: &str, expected: &[(ParseErrorKind, Range<usize>)]) {
-        let actual = Parser::new(input, SimpleExprContext)
+        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
             .parse()
             .unwrap_err()
             .errors
