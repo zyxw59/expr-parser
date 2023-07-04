@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, marker::PhantomData, ops::ControlFlow};
 
 use unicode_xid::UnicodeXID;
 
@@ -16,79 +16,39 @@ pub trait Tokenizer<'s> {
     fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)>;
 }
 
-pub struct SimpleTokenizer<'s> {
+/// A tokenizer which tokenizes characters by grouping them into sets.
+pub struct CharSetTokenizer<'s, C> {
     /// The full source string
     source: &'s str,
     /// The remainder of the input which has not been tokenized yet
     remainder: &'s str,
+    _marker: PhantomData<fn() -> C>,
 }
 
-impl<'s> SimpleTokenizer<'s> {
+pub trait CharSetTokenizerKind {
+    /// Categorize a character at the start of a potential token.
+    fn categorize(c: char) -> Self;
+
+    /// Categorize a charcter while continuing a potential token.
+    ///
+    /// # Return value
+    /// - `Continue`: accepts the character as part of this potential token.
+    /// - `Break(Some(_))`: rejects the character and produces a token with the specified
+    ///   `TokenKind`.
+    /// - `Break(None)`: rejects the character and does not produce a token.
+    fn next_char(&mut self, c: char) -> ControlFlow<Option<TokenKind>>;
+
+    /// What token kind (if any) to return if end of input is reached.
+    fn end_of_input(self) -> Option<TokenKind>;
+}
+
+impl<'s, C: CharSetTokenizerKind> CharSetTokenizer<'s, C> {
     pub fn new(source: &'s str) -> Self {
-        SimpleTokenizer {
+        Self {
             source,
             remainder: source,
+            _marker: PhantomData,
         }
-    }
-
-    fn lex_number(&mut self, has_dot: bool) -> TokenKind {
-        let mut kind = if has_dot {
-            TokenKind::Float
-        } else {
-            TokenKind::Integer
-        };
-        self.advance_while(is_number_char);
-        if !has_dot
-            && self.next_if(|ch| ch == '.').is_some()
-            && self.next_if(is_number_start_char).is_some()
-        {
-            kind = TokenKind::Float;
-            self.advance_while(is_number_char);
-        }
-        let mut it = self.remainder.chars();
-        if let Some('e' | 'E') = it.next() {
-            // try to parse an exponent -- optional `+` or `-` followed by one or more digits
-            match (it.next(), it.next()) {
-                (Some('+' | '-'), Some(c)) if is_number_char(c) => {
-                    kind = TokenKind::Float;
-                    // e/E
-                    self.next();
-                    // +/-
-                    self.next();
-                    self.advance_while(is_number_char);
-                }
-                (Some(c), _) if is_number_char(c) => {
-                    kind = TokenKind::Float;
-                    // e/E
-                    self.next();
-                    self.advance_while(is_number_char);
-                }
-                _ => {}
-            }
-        }
-        kind
-    }
-
-    fn lex_string(&mut self) -> TokenKind {
-        for (idx, _) in self.remainder.match_indices('"') {
-            // includes the string up to the `"` we just found
-            let string_match = &self.remainder[..idx];
-            // count backslashes
-            let num_backslash = string_match
-                .chars()
-                .rev()
-                .take_while(|ch| *ch == '\\')
-                .count();
-            if num_backslash % 2 == 0 {
-                // even number of backslashes => the `"` is unescaped
-                self.remainder = &self.remainder[idx..];
-                self.next();
-                return TokenKind::String;
-            }
-        }
-        // never found the closing `"`, we must have hit the end of the input
-        self.remainder = "";
-        TokenKind::UnterminatedString
     }
 
     fn next(&mut self) -> Option<char> {
@@ -98,19 +58,16 @@ impl<'s> SimpleTokenizer<'s> {
         val
     }
 
-    /// Advances by one character if that character matches the predicate
-    fn next_if(&mut self, predicate: impl FnOnce(char) -> bool) -> Option<char> {
-        let mut it = self.remainder.chars();
-        let ch = it.next()?;
-        if predicate(ch) {
-            self.remainder = it.as_str();
-            Some(ch)
-        } else {
-            None
-        }
-    }
-
-    fn advance_while(&mut self, mut predicate: impl FnMut(char) -> bool) {
+    /// Advances in the input as long as the character matches the character set.
+    fn advance_while(&mut self, mut state: C) -> Option<TokenKind> {
+        let kind = &mut None;
+        let mut predicate = |c| match state.next_char(c) {
+            ControlFlow::Continue(()) => true,
+            ControlFlow::Break(new_kind) => {
+                *kind = new_kind;
+                false
+            }
+        };
         let offset = self
             .remainder
             .char_indices()
@@ -119,6 +76,11 @@ impl<'s> SimpleTokenizer<'s> {
             .next()
             .unwrap_or(self.remainder.len());
         self.remainder = &self.remainder[offset..];
+        if self.remainder.is_empty() {
+            state.end_of_input()
+        } else {
+            *kind
+        }
     }
 
     /// Returns the byte position of the next character, or the length of the underlying string if
@@ -128,40 +90,164 @@ impl<'s> SimpleTokenizer<'s> {
     }
 }
 
-impl<'s> Tokenizer<'s> for SimpleTokenizer<'s> {
+impl<'s, C: CharSetTokenizerKind> Tokenizer<'s> for CharSetTokenizer<'s, C> {
     fn source(&self) -> &'s str {
         self.source
     }
 
+    /// Returns whether the remainder of the input is empty (i.e. the tokenizer has run to
+    /// completion)
     fn is_empty(&self) -> bool {
         self.remainder.is_empty()
     }
 
+    /// Returns the next token in the input, or `None` if there is no more input.
     fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)> {
-        // skip whitespace
-        if self.next_if(char::is_whitespace).is_some() {
-            self.advance_while(char::is_whitespace);
-        }
-        let start = self.next_index();
-        let ch = self.next()?;
-        let kind = match ch.into() {
-            CharKind::Digit => self.lex_number(false),
-            CharKind::Singleton => TokenKind::Tag,
-            CharKind::DoubleQuote => self.lex_string(),
-            CharKind::Dot if self.next_if(is_number_start_char).is_some() => self.lex_number(true),
-            kind => {
-                self.advance_while(|ch| kind.can_be_followed_by(ch));
-                TokenKind::Tag
+        loop {
+            let start = self.next_index();
+            let ch = self.next()?;
+            let state = C::categorize(ch);
+            if let Some(kind) = self.advance_while(state) {
+                let end = self.next_index();
+                return Some((
+                    Token {
+                        span: Span { start, end },
+                        source: self.source,
+                    },
+                    kind,
+                ));
             }
-        };
-        let end = self.next_index();
-        Some((
-            Token {
-                span: Span { start, end },
-                source: self.source,
-            },
-            kind,
-        ))
+        }
+    }
+}
+
+pub type SimpleTokenizer<'s> = CharSetTokenizer<'s, SimpleCharSet>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SimpleCharSet {
+    /// A number, which can be an integer, or a floating-point number
+    Number(NumberState),
+    /// An identifier consists of a character with the Unicode `XID_Start` property, followed by a
+    /// sequence of characters with the Unicode `XID_continue` property
+    Identifier,
+    /// A string delimited by double quotes (`"`). The boolean indicates whether an odd number of
+    /// backslashes have been matched (and thus the next `"` is escaped).
+    String(bool),
+    /// A character which forms a token on its own
+    Singleton,
+    /// Tokens starting with `<`, `=`, `>` can only contain other characters from that set.
+    Comparison,
+    /// `.` is part of a number if followed by a digit, or part of a punctuation tag otherwise.
+    Dot,
+    /// Whitespace isn't part of any token
+    Whitespace,
+    /// Any character not covered by the above categories
+    Other,
+    /// The next character will not be in this token
+    BreakNext(Option<TokenKind>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NumberState {
+    /// The first digit of the integer part has been matched
+    Integer,
+    /// The dot separating the integer and fractional parts has been matched
+    Dot,
+    /// The first digit of the fractional part has been matched
+    Fractional,
+}
+
+impl CharSetTokenizerKind for SimpleCharSet {
+    fn categorize(ch: char) -> Self {
+        match ch {
+            '"' => Self::String(false),
+            '.' => Self::Dot,
+            ch if is_singleton_char(ch) => Self::Singleton,
+            ch if is_comparison_char(ch) => Self::Comparison,
+            ch if is_number_start_char(ch) => Self::Number(NumberState::Integer),
+            ch if is_ident_start_char(ch) => Self::Identifier,
+            ch if ch.is_whitespace() => Self::Whitespace,
+            _ => Self::Other,
+        }
+    }
+
+    fn next_char(&mut self, ch: char) -> ControlFlow<Option<TokenKind>> {
+        match (*self, ch) {
+            (Self::Number(mut state), ch) => {
+                let res = state.next_char(ch);
+                *self = Self::Number(state);
+                res
+            }
+            (Self::Identifier, ch) if is_ident_char(ch) => ControlFlow::Continue(()),
+            (Self::String(false), '"') => {
+                *self = Self::BreakNext(Some(TokenKind::String));
+                ControlFlow::Continue(())
+            }
+            (Self::String(escaped), '\\') => {
+                *self = Self::String(!escaped);
+                ControlFlow::Continue(())
+            }
+            (Self::String(_), _) => {
+                *self = Self::String(false);
+                ControlFlow::Continue(())
+            }
+            (Self::Comparison, ch) if is_comparison_char(ch) => ControlFlow::Continue(()),
+            (Self::Dot, ch) if is_number_start_char(ch) => {
+                *self = Self::Number(NumberState::Dot);
+                ControlFlow::Continue(())
+            }
+            (Self::Dot, ch) if is_other_continuation_char(ch) => {
+                *self = Self::Other;
+                ControlFlow::Continue(())
+            }
+            (Self::Other, ch) if is_other_continuation_char(ch) => ControlFlow::Continue(()),
+            (
+                Self::Identifier | Self::Singleton | Self::Comparison | Self::Other | Self::Dot,
+                _,
+            ) => ControlFlow::Break(Some(TokenKind::Tag)),
+            (Self::Whitespace, ch) if ch.is_whitespace() => ControlFlow::Continue(()),
+            (Self::Whitespace, _) => ControlFlow::Break(None),
+            (Self::BreakNext(kind), _) => ControlFlow::Break(kind),
+        }
+    }
+
+    fn end_of_input(self) -> Option<TokenKind> {
+        match self {
+            Self::Number(state) => state.end_of_input(),
+            Self::Identifier | Self::Singleton | Self::Comparison | Self::Dot | Self::Other => {
+                Some(TokenKind::Tag)
+            }
+            Self::String(_) => Some(TokenKind::UnterminatedString),
+            Self::BreakNext(kind) => kind,
+            Self::Whitespace => None,
+        }
+    }
+}
+
+impl NumberState {
+    fn next_char(&mut self, ch: char) -> ControlFlow<Option<TokenKind>> {
+        match (*self, ch) {
+            (Self::Integer, '.') => {
+                *self = Self::Dot;
+                ControlFlow::Continue(())
+            }
+            (Self::Dot, ch) if is_number_start_char(ch) => {
+                *self = Self::Fractional;
+                ControlFlow::Continue(())
+            }
+            (Self::Integer | Self::Fractional, ch) if is_number_char(ch) => {
+                ControlFlow::Continue(())
+            }
+            (Self::Integer, _) => ControlFlow::Break(Some(TokenKind::Integer)),
+            (Self::Dot | Self::Fractional, _) => ControlFlow::Break(Some(TokenKind::Float)),
+        }
+    }
+
+    fn end_of_input(self) -> Option<TokenKind> {
+        match self {
+            Self::Integer => Some(TokenKind::Integer),
+            Self::Dot | Self::Fractional => Some(TokenKind::Float),
+        }
     }
 }
 
@@ -204,57 +290,6 @@ pub enum TokenKind {
     UnterminatedString,
 }
 
-/// Characters allowed at the start of a token
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CharKind {
-    /// ASCII digits 0-9
-    Digit,
-    /// Any other character with the Unicode `XID_Start` property
-    Identifier,
-    /// `"`
-    DoubleQuote,
-    /// A character which forms a token on its own
-    Singleton,
-    /// `<`, `=`, `>`
-    Comparison,
-    /// `.`
-    Dot,
-    /// Whitespace isn't part of any token
-    Whitespace,
-    /// Any character not covered by the above categories
-    Other,
-}
-
-impl CharKind {
-    /// Whether the specified character can follow in a token with this start kind.
-    fn can_be_followed_by(self, ch: char) -> bool {
-        match self {
-            CharKind::Digit => is_number_char(ch),
-            CharKind::Identifier => is_ident_char(ch),
-            CharKind::DoubleQuote => true,
-            CharKind::Singleton => false,
-            CharKind::Comparison => is_comparison_char(ch),
-            CharKind::Whitespace => ch.is_whitespace(),
-            CharKind::Dot | CharKind::Other => is_other_continuation_char(ch),
-        }
-    }
-}
-
-impl From<char> for CharKind {
-    fn from(ch: char) -> CharKind {
-        match ch {
-            '"' => CharKind::DoubleQuote,
-            '.' => CharKind::Dot,
-            ch if is_singleton_char(ch) => CharKind::Singleton,
-            ch if is_comparison_char(ch) => CharKind::Comparison,
-            ch if is_number_start_char(ch) => CharKind::Digit,
-            ch if is_ident_start_char(ch) => CharKind::Identifier,
-            ch if ch.is_whitespace() => CharKind::Whitespace,
-            _ => CharKind::Other,
-        }
-    }
-}
-
 #[inline]
 fn is_number_start_char(ch: char) -> bool {
     ch.is_ascii_digit()
@@ -288,8 +323,8 @@ fn is_singleton_char(ch: char) -> bool {
 #[inline]
 fn is_other_continuation_char(ch: char) -> bool {
     matches!(
-        ch.into(),
-        CharKind::Comparison | CharKind::Dot | CharKind::Other
+        SimpleCharSet::categorize(ch),
+        SimpleCharSet::Comparison | SimpleCharSet::Dot | SimpleCharSet::Other
     )
 }
 
@@ -313,19 +348,15 @@ mod tests {
     #[test_case("1_234", TokenKind::Integer, "1_234" ; "integer with underscores")]
     #[test_case("1.234", TokenKind::Float, "1.234" ; "simple float")]
     #[test_case(".234", TokenKind::Float, ".234" ; "float with no integer")]
+    #[test_case("1.", TokenKind::Float, "1." ; "integer followed by dot")]
     #[test_case("1.234.5", TokenKind::Float, "1.234" ; "float with extra dot")]
     #[test_case(".234.5", TokenKind::Float, ".234" ; "float with no integer and extra dot")]
-    #[test_case("1e1", TokenKind::Float, "1e1" ; "float exponential")]
-    #[test_case("1e1.", TokenKind::Float, "1e1" ; "float exponential followed by dot")]
-    #[test_case("1e", TokenKind::Integer, "1" ; "float incomplete exponential")]
-    #[test_case("1e-", TokenKind::Integer, "1" ; "float incomplete exponential with sign")]
-    #[test_case("1.3e-10", TokenKind::Float, "1.3e-10" ; "float with all")]
     #[test_case(r#""abc\"\\\"\\""#, TokenKind::String, r#""abc\"\\\"\\""# ; "string")]
     #[test_case(r#""abc\"\\\"abc"#, TokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
     #[test_case("(((", TokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: TokenKind, as_str: &str) {
         let actual = SimpleTokenizer::new(source).next_token().unwrap();
-        assert_eq!(actual.1, kind);
         assert_eq!(actual.0.as_str(), as_str);
+        assert_eq!(actual.1, kind);
     }
 }
