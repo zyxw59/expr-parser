@@ -552,6 +552,7 @@ mod tests {
     enum SimpleDelimiter {
         Paren,
         SquareBracket,
+        Pipe,
     }
 
     impl Delimiter for SimpleDelimiter {
@@ -605,6 +606,16 @@ mod tests {
                     },
                     postfix: Postfix::RightDelimiter {
                         delimiter: SimpleDelimiter::SquareBracket,
+                    },
+                },
+                "|" => Element {
+                    prefix: Prefix::LeftDelimiter {
+                        delimiter: SimpleDelimiter::Pipe,
+                        operator: Some(s),
+                        rhs_required: true,
+                    },
+                    postfix: Postfix::RightDelimiter {
+                        delimiter: SimpleDelimiter::Pipe,
                     },
                 },
                 "," => Element {
@@ -675,6 +686,7 @@ mod tests {
     #[test_case("[ ]", "] [" ; "empty list" )]
     #[test_case("f()", "f ) (" ; "empty function call" )]
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , ] , [" ; "trailing comma" )]
+    #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
             .parse()?
