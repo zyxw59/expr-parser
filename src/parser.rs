@@ -82,7 +82,7 @@ where
             return Ok(());
         };
         match kind {
-            TokenKind::Tag => match self.context.get_prefix(token) {
+            TokenKind::Tag => match self.context.get(token).prefix {
                 Prefix::LeftDelimiter {
                     delimiter,
                     operator,
@@ -179,7 +179,7 @@ where
             return Ok(());
         };
         match kind {
-            TokenKind::Tag => match self.context.get_postfix(token) {
+            TokenKind::Tag => match self.context.get(token).postfix {
                 Postfix::RightDelimiter { delimiter } => {
                     self.process_right_delimiter(token, delimiter)
                 }
@@ -357,16 +357,19 @@ pub trait ParseContext<'s> {
     type BinaryOperator;
     type UnaryOperator;
 
-    fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::UnaryOperator>;
-
-    fn get_postfix(
+    fn get(
         &self,
         token: Token<'s>,
-    ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator>;
+    ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator>;
 }
 
 pub trait Delimiter {
     fn matches(&self, other: &Self) -> bool;
+}
+
+pub struct Element<D, B, U> {
+    pub prefix: Prefix<D, U>,
+    pub postfix: Postfix<D, B, U>,
 }
 
 pub enum Prefix<D, U> {
@@ -534,7 +537,9 @@ mod tests {
 
     use test_case::test_case;
 
-    use super::{Delimiter, ParseContext, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM};
+    use super::{
+        Delimiter, Element, ParseContext, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM,
+    };
     use crate::{
         error::ParseErrorKind,
         operator::{Fixity, Precedence},
@@ -560,76 +565,103 @@ mod tests {
         type BinaryOperator = &'s str;
         type UnaryOperator = &'s str;
 
-        fn get_prefix(&self, token: Token<'s>) -> Prefix<Self::Delimiter, Self::UnaryOperator> {
-            let s = token.as_str();
-            match s {
-                "-" => Prefix::UnaryOperator {
-                    precedence: Precedence::Multiplicative,
-                    operator: s,
-                    rhs_required: true,
-                },
-                "(" => Prefix::LeftDelimiter {
-                    delimiter: SimpleDelimiter::Paren,
-                    operator: None,
-                    rhs_required: true,
-                },
-                "[" => Prefix::LeftDelimiter {
-                    delimiter: SimpleDelimiter::SquareBracket,
-                    operator: Some(s),
-                    rhs_required: false,
-                },
-                ")" => Prefix::RightDelimiter {
-                    delimiter: SimpleDelimiter::Paren,
-                },
-                "]" => Prefix::RightDelimiter {
-                    delimiter: SimpleDelimiter::SquareBracket,
-                },
-                _ => Prefix::None,
-            }
-        }
-
-        fn get_postfix(
+        fn get(
             &self,
             token: Token<'s>,
-        ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
+        ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
             let s = token.as_str();
             match s {
-                "," => Postfix::BinaryOperator {
-                    fixity: Fixity::Left(Precedence::Comma),
-                    operator: s,
-                    rhs_required: false,
+                "(" => Element {
+                    prefix: Prefix::LeftDelimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                        operator: None,
+                        rhs_required: true,
+                    },
+                    postfix: Postfix::LeftDelimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                        operator: s,
+                        rhs_required: false,
+                    },
                 },
-                "+" | "-" => Postfix::BinaryOperator {
-                    fixity: Fixity::Left(Precedence::Additive),
-                    operator: s,
-                    rhs_required: true,
+                ")" => Element {
+                    prefix: Prefix::RightDelimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                    },
+                    postfix: Postfix::RightDelimiter {
+                        delimiter: SimpleDelimiter::Paren,
+                    },
                 },
-                "*" | "/" => Postfix::BinaryOperator {
-                    fixity: Fixity::Left(Precedence::Multiplicative),
-                    operator: s,
-                    rhs_required: true,
+                "[" => Element {
+                    prefix: Prefix::LeftDelimiter {
+                        delimiter: SimpleDelimiter::SquareBracket,
+                        operator: Some(s),
+                        rhs_required: false,
+                    },
+                    postfix: Postfix::None,
                 },
-                "^" => Postfix::BinaryOperator {
-                    fixity: Fixity::Right(Precedence::Exponential),
-                    operator: s,
-                    rhs_required: true,
+                "]" => Element {
+                    prefix: Prefix::RightDelimiter {
+                        delimiter: SimpleDelimiter::SquareBracket,
+                    },
+                    postfix: Postfix::RightDelimiter {
+                        delimiter: SimpleDelimiter::SquareBracket,
+                    },
                 },
-                "!" => Postfix::PostfixOperator {
-                    precedence: Precedence::Exponential,
-                    operator: s,
+                "," => Element {
+                    prefix: Prefix::None,
+                    postfix: Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Comma),
+                        operator: s,
+                        rhs_required: false,
+                    },
                 },
-                "(" => Postfix::LeftDelimiter {
-                    delimiter: SimpleDelimiter::Paren,
-                    operator: s,
-                    rhs_required: false,
+                "-" => Element {
+                    prefix: Prefix::UnaryOperator {
+                        precedence: Precedence::Multiplicative,
+                        operator: s,
+                        rhs_required: true,
+                    },
+                    postfix: Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Additive),
+                        operator: s,
+                        rhs_required: true,
+                    },
                 },
-                ")" => Postfix::RightDelimiter {
-                    delimiter: SimpleDelimiter::Paren,
+                "+" => Element {
+                    prefix: Prefix::None,
+                    postfix: Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Additive),
+                        operator: s,
+                        rhs_required: true,
+                    },
                 },
-                "]" => Postfix::RightDelimiter {
-                    delimiter: SimpleDelimiter::SquareBracket,
+                "*" | "/" => Element {
+                    prefix: Prefix::None,
+                    postfix: Postfix::BinaryOperator {
+                        fixity: Fixity::Left(Precedence::Multiplicative),
+                        operator: s,
+                        rhs_required: true,
+                    },
                 },
-                _ => Postfix::None,
+                "^" => Element {
+                    prefix: Prefix::None,
+                    postfix: Postfix::BinaryOperator {
+                        fixity: Fixity::Right(Precedence::Exponential),
+                        operator: s,
+                        rhs_required: true,
+                    },
+                },
+                "!" => Element {
+                    prefix: Prefix::None,
+                    postfix: Postfix::PostfixOperator {
+                        precedence: Precedence::Exponential,
+                        operator: s,
+                    },
+                },
+                _ => Element {
+                    prefix: Prefix::None,
+                    postfix: Postfix::None,
+                },
             }
         }
     }
