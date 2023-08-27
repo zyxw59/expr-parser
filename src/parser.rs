@@ -86,6 +86,7 @@ where
                 Prefix::LeftDelimiter {
                     delimiter,
                     operator,
+                    rhs_required,
                 } => {
                     self.stack.push(StackElement {
                         token,
@@ -93,7 +94,7 @@ where
                         delimiter: Some(delimiter),
                         operator: StackOperator::from_unary_option(operator),
                     });
-                    self.state = State::Initial;
+                    self.state = State::post_operator(rhs_required);
                 }
                 Prefix::RightDelimiter { delimiter } => {
                     if self.state == State::Initial {
@@ -114,6 +115,7 @@ where
                 Prefix::UnaryOperator {
                     precedence,
                     operator,
+                    rhs_required,
                 } => {
                     self.stack.push(StackElement {
                         token,
@@ -121,8 +123,9 @@ where
                         delimiter: None,
                         operator: StackOperator::Unary(operator),
                     });
-                    self.state = State::PostOperator;
+                    self.state = State::post_operator(rhs_required);
                 }
+                // TODO: distinguish tokens which are illegal in prefix position
                 Prefix::None => {
                     self.state = State::PostTerm;
                     self.queue.push_back(Expression {
@@ -180,12 +183,12 @@ where
                 Postfix::RightDelimiter { delimiter } => {
                     self.process_right_delimiter(token, delimiter)
                 }
-                Postfix::BinaryOperator { fixity, operator } => {
-                    self.state = State::PostOperator;
-                    self.process_binary_operator(token, fixity, operator)
-                }
-                Postfix::MixedOperator { fixity, operator } => {
-                    self.state = State::Initial;
+                Postfix::BinaryOperator {
+                    fixity,
+                    operator,
+                    rhs_required,
+                } => {
+                    self.state = State::post_operator(rhs_required);
                     self.process_binary_operator(token, fixity, operator)
                 }
                 Postfix::PostfixOperator {
@@ -195,8 +198,9 @@ where
                 Postfix::LeftDelimiter {
                     delimiter,
                     operator,
+                    rhs_required,
                 } => {
-                    self.state = State::Initial;
+                    self.state = State::post_operator(rhs_required);
                     // left delimiter in operator position indicates a function call or similar.
                     // this is indicated by adding a binary operator (with the same token as the
                     // delimiter) to the stack immediately after the delimiter itself. this
@@ -207,7 +211,7 @@ where
                         token,
                         precedence: Precedence::Base,
                         delimiter: Some(delimiter),
-                        operator: StackOperator::Unary(operator),
+                        operator: StackOperator::Binary(operator),
                     });
                     Ok(())
                 }
@@ -366,9 +370,19 @@ pub trait Delimiter {
 }
 
 pub enum Prefix<D, U> {
-    UnaryOperator { precedence: Precedence, operator: U },
-    LeftDelimiter { delimiter: D, operator: Option<U> },
-    RightDelimiter { delimiter: D },
+    UnaryOperator {
+        precedence: Precedence,
+        operator: U,
+        rhs_required: bool,
+    },
+    LeftDelimiter {
+        delimiter: D,
+        operator: Option<U>,
+        rhs_required: bool,
+    },
+    RightDelimiter {
+        delimiter: D,
+    },
     None,
 }
 
@@ -376,11 +390,7 @@ pub enum Postfix<D, B, U> {
     BinaryOperator {
         fixity: Fixity,
         operator: B,
-    },
-    /// A mixed operator is a binary operator whose right-hand side is optional.
-    MixedOperator {
-        fixity: Fixity,
-        operator: B,
+        rhs_required: bool,
     },
     PostfixOperator {
         precedence: Precedence,
@@ -388,7 +398,8 @@ pub enum Postfix<D, B, U> {
     },
     LeftDelimiter {
         delimiter: D,
-        operator: U,
+        operator: B,
+        rhs_required: bool,
     },
     RightDelimiter {
         delimiter: D,
@@ -401,6 +412,19 @@ enum State {
     Initial,
     PostOperator,
     PostTerm,
+}
+
+impl State {
+    /// Returns the next state after an operator or similar. If the right-hand-side is required,
+    /// the next state will be `PostOperator`, and if it is not required, the next state will be
+    /// `Initial`
+    fn post_operator(rhs_required: bool) -> Self {
+        if rhs_required {
+            Self::PostOperator
+        } else {
+            Self::Initial
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -542,14 +566,17 @@ mod tests {
                 "-" => Prefix::UnaryOperator {
                     precedence: Precedence::Multiplicative,
                     operator: s,
+                    rhs_required: true,
                 },
                 "(" => Prefix::LeftDelimiter {
                     delimiter: SimpleDelimiter::Paren,
                     operator: None,
+                    rhs_required: true,
                 },
                 "[" => Prefix::LeftDelimiter {
                     delimiter: SimpleDelimiter::SquareBracket,
                     operator: Some(s),
+                    rhs_required: false,
                 },
                 ")" => Prefix::RightDelimiter {
                     delimiter: SimpleDelimiter::Paren,
@@ -567,21 +594,25 @@ mod tests {
         ) -> Postfix<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
             let s = token.as_str();
             match s {
-                "," => Postfix::MixedOperator {
+                "," => Postfix::BinaryOperator {
                     fixity: Fixity::Left(Precedence::Comma),
                     operator: s,
+                    rhs_required: false,
                 },
                 "+" | "-" => Postfix::BinaryOperator {
                     fixity: Fixity::Left(Precedence::Additive),
                     operator: s,
+                    rhs_required: true,
                 },
                 "*" | "/" => Postfix::BinaryOperator {
                     fixity: Fixity::Left(Precedence::Multiplicative),
                     operator: s,
+                    rhs_required: true,
                 },
                 "^" => Postfix::BinaryOperator {
                     fixity: Fixity::Right(Precedence::Exponential),
                     operator: s,
+                    rhs_required: true,
                 },
                 "!" => Postfix::PostfixOperator {
                     precedence: Precedence::Exponential,
@@ -590,6 +621,7 @@ mod tests {
                 "(" => Postfix::LeftDelimiter {
                     delimiter: SimpleDelimiter::Paren,
                     operator: s,
+                    rhs_required: false,
                 },
                 ")" => Postfix::RightDelimiter {
                     delimiter: SimpleDelimiter::Paren,
