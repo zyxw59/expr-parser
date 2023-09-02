@@ -5,6 +5,8 @@ use unicode_xid::UnicodeXID;
 use crate::Span;
 
 pub trait Tokenizer<'s> {
+    type TokenKind;
+
     /// Returns the full source string
     fn source(&self) -> &'s str;
 
@@ -13,7 +15,7 @@ pub trait Tokenizer<'s> {
     fn is_empty(&self) -> bool;
 
     /// Returns the next token in the input, or `None` if there is no more input.
-    fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)>;
+    fn next_token(&mut self) -> Option<(Token<'s>, Self::TokenKind)>;
 }
 
 /// A tokenizer which tokenizes characters by grouping them into sets.
@@ -26,6 +28,8 @@ pub struct CharSetTokenizer<'s, C> {
 }
 
 pub trait CharSet {
+    type TokenKind;
+
     /// Categorize a character at the start of a potential token.
     fn categorize(c: char) -> Self;
 
@@ -36,10 +40,10 @@ pub trait CharSet {
     /// - `Break(Some(_))`: rejects the character and produces a token with the specified
     ///   `TokenKind`.
     /// - `Break(None)`: rejects the character and does not produce a token.
-    fn next_char(&mut self, c: char) -> ControlFlow<Option<TokenKind>>;
+    fn next_char(&mut self, c: char) -> ControlFlow<Option<Self::TokenKind>>;
 
     /// What token kind (if any) to return if end of input is reached.
-    fn end_of_input(self) -> Option<TokenKind>;
+    fn end_of_input(self) -> Option<Self::TokenKind>;
 }
 
 impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
@@ -60,12 +64,12 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
     }
 
     /// Advances in the input as long as the character matches the character set.
-    fn advance_while(&mut self, mut state: C) -> Option<TokenKind> {
-        let kind = &mut None;
+    fn advance_while(&mut self, mut state: C) -> Option<C::TokenKind> {
+        let mut kind = None;
         let mut predicate = |c| match state.next_char(c) {
             ControlFlow::Continue(()) => true,
             ControlFlow::Break(new_kind) => {
-                *kind = new_kind;
+                kind = new_kind;
                 false
             }
         };
@@ -80,7 +84,7 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
         if self.remainder.is_empty() {
             state.end_of_input()
         } else {
-            *kind
+            kind
         }
     }
 
@@ -92,6 +96,8 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
 }
 
 impl<'s, C: CharSet> Tokenizer<'s> for CharSetTokenizer<'s, C> {
+    type TokenKind = C::TokenKind;
+
     fn source(&self) -> &'s str {
         self.source
     }
@@ -100,7 +106,7 @@ impl<'s, C: CharSet> Tokenizer<'s> for CharSetTokenizer<'s, C> {
         self.remainder.is_empty()
     }
 
-    fn next_token(&mut self) -> Option<(Token<'s>, TokenKind)> {
+    fn next_token(&mut self) -> Option<(Token<'s>, Self::TokenKind)> {
         loop {
             let start = self.next_index();
             let ch = self.next()?;
@@ -142,7 +148,7 @@ pub enum SimpleCharSet {
     /// Any character not covered by the above categories
     Other,
     /// The next character will not be in this token
-    BreakNext(Option<TokenKind>),
+    BreakNext(Option<SimpleCharSetTokenKind>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,6 +162,8 @@ pub enum NumberState {
 }
 
 impl CharSet for SimpleCharSet {
+    type TokenKind = SimpleCharSetTokenKind;
+
     fn categorize(ch: char) -> Self {
         match ch {
             '"' => Self::String(false),
@@ -169,7 +177,7 @@ impl CharSet for SimpleCharSet {
         }
     }
 
-    fn next_char(&mut self, ch: char) -> ControlFlow<Option<TokenKind>> {
+    fn next_char(&mut self, ch: char) -> ControlFlow<Option<Self::TokenKind>> {
         match (*self, ch) {
             (Self::Number(mut state), ch) => {
                 let res = state.next_char(ch);
@@ -178,7 +186,7 @@ impl CharSet for SimpleCharSet {
             }
             (Self::Identifier, ch) if is_ident_char(ch) => ControlFlow::Continue(()),
             (Self::String(false), '"') => {
-                *self = Self::BreakNext(Some(TokenKind::String));
+                *self = Self::BreakNext(Some(SimpleCharSetTokenKind::String));
                 ControlFlow::Continue(())
             }
             (Self::String(escaped), '\\') => {
@@ -202,20 +210,20 @@ impl CharSet for SimpleCharSet {
             (
                 Self::Identifier | Self::Singleton | Self::Comparison | Self::Other | Self::Dot,
                 _,
-            ) => ControlFlow::Break(Some(TokenKind::Tag)),
+            ) => ControlFlow::Break(Some(SimpleCharSetTokenKind::Tag)),
             (Self::Whitespace, ch) if ch.is_whitespace() => ControlFlow::Continue(()),
             (Self::Whitespace, _) => ControlFlow::Break(None),
             (Self::BreakNext(kind), _) => ControlFlow::Break(kind),
         }
     }
 
-    fn end_of_input(self) -> Option<TokenKind> {
+    fn end_of_input(self) -> Option<Self::TokenKind> {
         match self {
             Self::Number(state) => state.end_of_input(),
             Self::Identifier | Self::Singleton | Self::Comparison | Self::Dot | Self::Other => {
-                Some(TokenKind::Tag)
+                Some(SimpleCharSetTokenKind::Tag)
             }
-            Self::String(_) => Some(TokenKind::UnterminatedString),
+            Self::String(_) => Some(SimpleCharSetTokenKind::UnterminatedString),
             Self::BreakNext(kind) => kind,
             Self::Whitespace => None,
         }
@@ -223,7 +231,7 @@ impl CharSet for SimpleCharSet {
 }
 
 impl NumberState {
-    fn next_char(&mut self, ch: char) -> ControlFlow<Option<TokenKind>> {
+    fn next_char(&mut self, ch: char) -> ControlFlow<Option<SimpleCharSetTokenKind>> {
         match (*self, ch) {
             (Self::Integer, '.') => {
                 *self = Self::Dot;
@@ -236,15 +244,17 @@ impl NumberState {
             (Self::Integer | Self::Fractional, ch) if is_number_char(ch) => {
                 ControlFlow::Continue(())
             }
-            (Self::Integer, _) => ControlFlow::Break(Some(TokenKind::Integer)),
-            (Self::Dot | Self::Fractional, _) => ControlFlow::Break(Some(TokenKind::Float)),
+            (Self::Integer, _) => ControlFlow::Break(Some(SimpleCharSetTokenKind::Integer)),
+            (Self::Dot | Self::Fractional, _) => {
+                ControlFlow::Break(Some(SimpleCharSetTokenKind::Float))
+            }
         }
     }
 
-    fn end_of_input(self) -> Option<TokenKind> {
+    fn end_of_input(self) -> Option<SimpleCharSetTokenKind> {
         match self {
-            Self::Integer => Some(TokenKind::Integer),
-            Self::Dot | Self::Fractional => Some(TokenKind::Float),
+            Self::Integer => Some(SimpleCharSetTokenKind::Integer),
+            Self::Dot | Self::Fractional => Some(SimpleCharSetTokenKind::Float),
         }
     }
 }
@@ -280,7 +290,7 @@ impl<'s> fmt::Display for Token<'s> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TokenKind {
+pub enum SimpleCharSetTokenKind {
     Tag,
     Integer,
     Float,
@@ -330,29 +340,29 @@ fn is_other_continuation_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{SimpleTokenizer, TokenKind, Tokenizer};
+    use super::{SimpleCharSetTokenKind, SimpleTokenizer, Tokenizer};
 
-    #[test_case("abc", TokenKind::Tag, "abc" ; "tag abc")]
-    #[test_case("a\u{0300}bc", TokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
-    #[test_case("_0", TokenKind::Tag, "_0" ; "tag _0")]
-    #[test_case("abc+", TokenKind::Tag, "abc" ; "tag followed by other char")]
-    #[test_case("   \n\t\rabc", TokenKind::Tag, "abc" ; "leading whitespace")]
-    #[test_case("<>", TokenKind::Tag, "<>" ; "comparison tag")]
-    #[test_case("=-", TokenKind::Tag, "=" ; "comparison followed by other char")]
-    #[test_case("-=", TokenKind::Tag, "-=" ; "other char followed by comparison")]
-    #[test_case("..", TokenKind::Tag, ".." ; "tag starting with dot")]
-    #[test_case("..123", TokenKind::Tag, ".." ; "tag starting with dot followed by number")]
-    #[test_case("123", TokenKind::Integer, "123" ; "integer")]
-    #[test_case("1_234", TokenKind::Integer, "1_234" ; "integer with underscores")]
-    #[test_case("1.234", TokenKind::Float, "1.234" ; "simple float")]
-    #[test_case(".234", TokenKind::Float, ".234" ; "float with no integer")]
-    #[test_case("1.", TokenKind::Float, "1." ; "integer followed by dot")]
-    #[test_case("1.234.5", TokenKind::Float, "1.234" ; "float with extra dot")]
-    #[test_case(".234.5", TokenKind::Float, ".234" ; "float with no integer and extra dot")]
-    #[test_case(r#""abc\"\\\"\\""#, TokenKind::String, r#""abc\"\\\"\\""# ; "string")]
-    #[test_case(r#""abc\"\\\"abc"#, TokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
-    #[test_case("(((", TokenKind::Tag, "(" ; "singleton")]
-    fn lex_one(source: &str, kind: TokenKind, as_str: &str) {
+    #[test_case("abc", SimpleCharSetTokenKind::Tag, "abc" ; "tag abc")]
+    #[test_case("a\u{0300}bc", SimpleCharSetTokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
+    #[test_case("_0", SimpleCharSetTokenKind::Tag, "_0" ; "tag _0")]
+    #[test_case("abc+", SimpleCharSetTokenKind::Tag, "abc" ; "tag followed by other char")]
+    #[test_case("   \n\t\rabc", SimpleCharSetTokenKind::Tag, "abc" ; "leading whitespace")]
+    #[test_case("<>", SimpleCharSetTokenKind::Tag, "<>" ; "comparison tag")]
+    #[test_case("=-", SimpleCharSetTokenKind::Tag, "=" ; "comparison followed by other char")]
+    #[test_case("-=", SimpleCharSetTokenKind::Tag, "-=" ; "other char followed by comparison")]
+    #[test_case("..", SimpleCharSetTokenKind::Tag, ".." ; "tag starting with dot")]
+    #[test_case("..123", SimpleCharSetTokenKind::Tag, ".." ; "tag starting with dot followed by number")]
+    #[test_case("123", SimpleCharSetTokenKind::Integer, "123" ; "integer")]
+    #[test_case("1_234", SimpleCharSetTokenKind::Integer, "1_234" ; "integer with underscores")]
+    #[test_case("1.234", SimpleCharSetTokenKind::Float, "1.234" ; "simple float")]
+    #[test_case(".234", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer")]
+    #[test_case("1.", SimpleCharSetTokenKind::Float, "1." ; "integer followed by dot")]
+    #[test_case("1.234.5", SimpleCharSetTokenKind::Float, "1.234" ; "float with extra dot")]
+    #[test_case(".234.5", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer and extra dot")]
+    #[test_case(r#""abc\"\\\"\\""#, SimpleCharSetTokenKind::String, r#""abc\"\\\"\\""# ; "string")]
+    #[test_case(r#""abc\"\\\"abc"#, SimpleCharSetTokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
+    #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
+    fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
         let actual = SimpleTokenizer::new(source).next_token().unwrap();
         assert_eq!((actual.0.as_str(), actual.1), (as_str, kind));
     }

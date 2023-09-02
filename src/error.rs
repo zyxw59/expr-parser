@@ -3,11 +3,11 @@ use std::fmt;
 use crate::Span;
 
 #[derive(Clone, Debug, thiserror::Error)]
-pub struct ParseErrors {
-    pub errors: Vec<ParseError>,
+pub struct ParseErrors<E> {
+    pub errors: Vec<ParseError<E>>,
 }
 
-impl fmt::Display for ParseErrors {
+impl<E: fmt::Display> fmt::Display for ParseErrors<E> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.errors.len() == 1 {
             f.write_str("Encountered 1 error:\n")?;
@@ -21,21 +21,21 @@ impl fmt::Display for ParseErrors {
     }
 }
 
-impl From<Vec<ParseError>> for ParseErrors {
-    fn from(errors: Vec<ParseError>) -> Self {
+impl<E> From<Vec<ParseError<E>>> for ParseErrors<E> {
+    fn from(errors: Vec<ParseError<E>>) -> Self {
         ParseErrors { errors }
     }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("Parse error at {span}: {kind}")]
-pub struct ParseError {
+pub struct ParseError<E> {
     pub span: Span,
-    pub kind: ParseErrorKind,
+    pub kind: ParseErrorKind<E>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ParseErrorKind {
+pub enum ParseErrorKind<E> {
     #[error("Unexpected end of input (expected {expected})")]
     EndOfInput { expected: &'static str },
     #[error("Unexpected token (expected {expected})")]
@@ -54,6 +54,8 @@ pub enum ParseErrorKind {
     UnmatchedLeftDelimiter,
     #[error("Operator with `Base` precedence")]
     OperatorWithBasePrecedence,
+    #[error(transparent)]
+    Other(E),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
