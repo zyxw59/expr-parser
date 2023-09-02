@@ -6,6 +6,7 @@ authors = ["emily Crandall Fleischman <emilycf@mit.edu>"]
 license = "MIT"
 
 [dependencies]
+derivative = "2.2.0"
 itertools = "0.10.5"
 thiserror = "1.0.38"
 unicode-xid = "0.2.4"

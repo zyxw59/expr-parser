@@ -2,7 +2,7 @@ use std::{borrow::Cow, collections::VecDeque};
 
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
-    expression::{Expression, ExpressionKind},
+    expression::{Expression, ExpressionKind, ExpressionTypes},
     operator::{Fixity, Precedence},
     token::{Token, Tokenizer},
     Span,
@@ -11,14 +11,7 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub type ExpressionQueue<'s, C> = VecDeque<
-    Expression<
-        's,
-        <C as ParseContext<'s>>::BinaryOperator,
-        <C as ParseContext<'s>>::UnaryOperator,
-        <C as ParseContext<'s>>::Term,
-    >,
->;
+pub type ExpressionQueue<'s, C> = VecDeque<Expression<'s, C>>;
 
 pub struct Parser<'s, T, C: ParseContext<'s>> {
     tokenizer: T,
@@ -372,12 +365,9 @@ where
     }
 }
 
-pub trait ParseContext<'s> {
+pub trait ParseContext<'s>: ExpressionTypes {
     type TokenKind;
     type Delimiter: Delimiter;
-    type BinaryOperator;
-    type UnaryOperator;
-    type Term;
     type Error;
 
     fn parse_token(
@@ -560,7 +550,7 @@ fn parse_float(s: &str) -> Result<f64, ParseFloatError> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
+    use std::{ops::Range, marker::PhantomData};
 
     use test_case::test_case;
 
@@ -571,9 +561,13 @@ mod tests {
         error::ParseErrorKind,
         operator::{Fixity, Precedence},
         token::{SimpleCharSetTokenKind, SimpleTokenizer, Token},
+        expression::ExpressionTypes,
     };
 
-    struct SimpleExprContext;
+    #[derive(Default)]
+    struct SimpleExprContext<'s> {
+        _marker: PhantomData<&'s ()>,
+    }
 
     #[derive(Debug, Eq, PartialEq, thiserror::Error)]
     enum SimpleParserError {}
@@ -591,13 +585,16 @@ mod tests {
         }
     }
 
-    impl<'s> ParseContext<'s> for SimpleExprContext {
-        type Error = SimpleParserError;
-        type TokenKind = SimpleCharSetTokenKind;
-        type Delimiter = SimpleDelimiter;
+    impl<'s> ExpressionTypes for SimpleExprContext<'s> {
         type BinaryOperator = &'s str;
         type UnaryOperator = &'s str;
         type Term = &'s str;
+    }
+
+    impl<'s> ParseContext<'s> for SimpleExprContext<'s> {
+        type Error = SimpleParserError;
+        type TokenKind = SimpleCharSetTokenKind;
+        type Delimiter = SimpleDelimiter;
 
         fn parse_token(
             &self,
@@ -723,7 +720,7 @@ mod tests {
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , ] , [" ; "trailing comma" )]
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
+        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext::default())
             .parse()?
             .into_iter()
             .map(|expr| expr.token.as_str())
@@ -747,7 +744,7 @@ mod tests {
         input: &str,
         expected: &[(ParseErrorKind<SimpleParserError>, Range<usize>)],
     ) {
-        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
+        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext::default())
             .parse()
             .unwrap_err()
             .errors
