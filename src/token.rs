@@ -4,20 +4,6 @@ use unicode_xid::UnicodeXID;
 
 use crate::Span;
 
-pub trait Tokenizer<'s> {
-    type TokenKind;
-
-    /// Returns the full source string
-    fn source(&self) -> &'s str;
-
-    /// Returns whether the remainder of the input is empty (i.e. the tokenizer has run to
-    /// completion)
-    fn is_empty(&self) -> bool;
-
-    /// Returns the next token in the input, or `None` if there is no more input.
-    fn next_token(&mut self) -> Option<(Token<'s>, Self::TokenKind)>;
-}
-
 /// A tokenizer which tokenizes characters by grouping them into sets.
 pub struct CharSetTokenizer<'s, C> {
     /// The full source string
@@ -56,7 +42,7 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
     }
 
     /// Advance to the next input character.
-    fn next(&mut self) -> Option<char> {
+    fn next_char(&mut self) -> Option<char> {
         let mut it = self.remainder.chars();
         let val = it.next();
         self.remainder = it.as_str();
@@ -95,21 +81,13 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
     }
 }
 
-impl<'s, C: CharSet> Tokenizer<'s> for CharSetTokenizer<'s, C> {
-    type TokenKind = C::TokenKind;
+impl<'s, C: CharSet> Iterator for CharSetTokenizer<'s, C> {
+    type Item = (Token<'s>, C::TokenKind);
 
-    fn source(&self) -> &'s str {
-        self.source
-    }
-
-    fn is_empty(&self) -> bool {
-        self.remainder.is_empty()
-    }
-
-    fn next_token(&mut self) -> Option<(Token<'s>, Self::TokenKind)> {
+    fn next(&mut self) -> Option<Self::Item> {
         loop {
             let start = self.next_index();
-            let ch = self.next()?;
+            let ch = self.next_char()?;
             let state = C::categorize(ch);
             if let Some(kind) = self.advance_while(state) {
                 let end = self.next_index();
@@ -340,7 +318,7 @@ fn is_other_continuation_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{SimpleCharSetTokenKind, SimpleTokenizer, Tokenizer};
+    use super::{SimpleCharSetTokenKind, SimpleTokenizer};
 
     #[test_case("abc", SimpleCharSetTokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", SimpleCharSetTokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
@@ -363,7 +341,7 @@ mod tests {
     #[test_case(r#""abc\"\\\"abc"#, SimpleCharSetTokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
     #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
-        let actual = SimpleTokenizer::new(source).next_token().unwrap();
+        let actual = SimpleTokenizer::new(source).next().unwrap();
         assert_eq!((actual.0.as_str(), actual.1), (as_str, kind));
     }
 }

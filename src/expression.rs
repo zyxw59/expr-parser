@@ -11,5 +11,4 @@ pub enum ExpressionKind<B, U, T> {
     BinaryOperator(B),
     UnaryOperator(U),
     Term(T),
-    Null,
 }
