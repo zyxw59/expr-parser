@@ -58,3 +58,39 @@ where
 
     Ok(stack.pop().expect(STACK_EMPTY))
 }
+
+/// An `EvaluationContext` whose `Value` type is the same as its `Term` type, and whose operators
+/// are pure functions on that type that return `Result<Term, E>`
+pub struct PureEvaluator;
+
+impl<'s, B, U, T, E> EvaluationContext<'s, B, U, T> for PureEvaluator
+where
+    B: FnOnce(T, T) -> Result<T, E>,
+    U: FnOnce(T) -> Result<T, E>,
+{
+    type Value = T;
+    type Error = E;
+
+    fn evaluate_binary_operator(
+        &self,
+        _token: Token<'s>,
+        operator: B,
+        lhs: Self::Value,
+        rhs: Self::Value,
+    ) -> Result<Self::Value, Self::Error> {
+        operator(lhs, rhs)
+    }
+
+    fn evaluate_unary_operator(
+        &self,
+        _token: Token<'s>,
+        operator: U,
+        argument: Self::Value,
+    ) -> Result<Self::Value, Self::Error> {
+        operator(argument)
+    }
+
+    fn evaluate_term(&self, _token: Token<'s>, term: T) -> Result<Self::Value, Self::Error> {
+        Ok(term)
+    }
+}
