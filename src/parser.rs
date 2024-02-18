@@ -219,6 +219,7 @@ where
             }
             Postfix::None => {
                 self.state = State::PostOperator;
+                // TODO(#11) here is where we would support implicit operators
                 Err(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
                         expected: EXPECT_OPERATOR,
