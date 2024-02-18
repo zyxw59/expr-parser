@@ -40,20 +40,12 @@ pub enum ParseErrorKind<E> {
     EndOfInput { expected: &'static str },
     #[error("Unexpected token (expected {expected})")]
     UnexpectedToken { expected: &'static str },
-    #[error("Invalid integer literal: {0}")]
-    ParseInt(#[from] ParseIntError),
-    #[error("Invalid float literal: {0}")]
-    ParseFloat(#[from] ParseFloatError),
-    #[error("Unterminated string literal")]
-    UnterminatedString,
     #[error("Mismatched closing delimiter (opening {opening})")]
     MismatchedDelimiter { opening: Span },
     #[error("Unmatched closing delimiter")]
     UnmatchedRightDelimiter,
     #[error("Unmatched opening delimiter")]
     UnmatchedLeftDelimiter,
-    #[error("Operator with `Base` precedence")]
-    OperatorWithBasePrecedence,
     #[error(transparent)]
     Other(E),
 }
