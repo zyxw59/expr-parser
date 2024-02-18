@@ -11,26 +11,26 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub type ExpressionQueue<'s, C> = VecDeque<
+pub type ExpressionQueue<'s, C, T> = VecDeque<
     Expression<
         's,
-        <C as ParseContext<'s>>::BinaryOperator,
-        <C as ParseContext<'s>>::UnaryOperator,
-        <C as ParseContext<'s>>::Term,
+        <C as ParseContext<'s, T>>::BinaryOperator,
+        <C as ParseContext<'s, T>>::UnaryOperator,
+        <C as ParseContext<'s, T>>::Term,
     >,
 >;
 
-pub struct Parser<'s, I, C: ParseContext<'s>> {
+pub struct Parser<'s, I, T, C: ParseContext<'s, T>> {
     tokenizer: I,
     context: C,
     state: State,
     stack: Stack<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator, C::Term>,
-    queue: ExpressionQueue<'s, C>,
+    queue: ExpressionQueue<'s, C, T>,
 }
 
-impl<'s, I, C, T> Parser<'s, I, C>
+impl<'s, I, T, C> Parser<'s, I, T, C>
 where
-    C: ParseContext<'s, TokenKind = T>,
+    C: ParseContext<'s, T>,
     I: Iterator<Item = (Token<'s>, T)>,
 {
     pub fn new(tokenizer: I, context: C) -> Self {
@@ -43,7 +43,7 @@ where
         }
     }
 
-    pub fn parse(mut self) -> Result<ExpressionQueue<'s, C>, ParseErrors<C::Error>> {
+    pub fn parse(mut self) -> Result<ExpressionQueue<'s, C, T>, ParseErrors<C::Error>> {
         let mut errors = Vec::new();
         let mut end_of_input = 0;
         while let Some((token, kind)) = self.tokenizer.next() {
@@ -406,8 +406,7 @@ where
     }
 }
 
-pub trait ParseContext<'s> {
-    type TokenKind;
+pub trait ParseContext<'s, T> {
     type Delimiter: Delimiter;
     type BinaryOperator;
     type UnaryOperator;
@@ -417,7 +416,7 @@ pub trait ParseContext<'s> {
     fn parse_token(
         &self,
         token: Token<'s>,
-        kind: Self::TokenKind,
+        kind: T,
     ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator, Self::Term>;
 }
 
@@ -627,9 +626,8 @@ mod tests {
         }
     }
 
-    impl<'s> ParseContext<'s> for SimpleExprContext {
+    impl<'s> ParseContext<'s, SimpleCharSetTokenKind> for SimpleExprContext {
         type Error = SimpleParserError;
-        type TokenKind = SimpleCharSetTokenKind;
         type Delimiter = SimpleDelimiter;
         type BinaryOperator = &'s str;
         type UnaryOperator = &'s str;
@@ -638,7 +636,7 @@ mod tests {
         fn parse_token(
             &self,
             token: Token<'s>,
-            _kind: Self::TokenKind,
+            _kind: SimpleCharSetTokenKind,
         ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator, Self::Term>
         {
             let s = token.as_str();
