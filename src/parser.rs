@@ -157,46 +157,6 @@ where
                 });
             }
         };
-        /*
-        match kind {
-            TokenKind::Integer => {
-                self.state = State::PostTerm;
-                let int = parse_integer(token.as_str()).map_err(|e| ParseError {
-                    kind: e.into(),
-                    span: token.span(),
-                })?;
-                self.queue.push_back(Expression {
-                    token,
-                    kind: ExpressionKind::Integer(int),
-                });
-            }
-            TokenKind::Float => {
-                self.state = State::PostTerm;
-                let float = parse_float(token.as_str()).map_err(|e| ParseError {
-                    kind: e.into(),
-                    span: token.span(),
-                })?;
-                self.queue.push_back(Expression {
-                    token,
-                    kind: ExpressionKind::Float(float),
-                });
-            }
-            TokenKind::String => {
-                self.state = State::PostTerm;
-                self.queue.push_back(Expression {
-                    token,
-                    kind: ExpressionKind::String,
-                });
-            }
-            TokenKind::UnterminatedString => {
-                self.state = State::PostTerm;
-                return Err(ParseError {
-                    kind: ParseErrorKind::UnterminatedString,
-                    span: token.span(),
-                });
-            }
-        }
-        */
         Ok(())
     }
 
