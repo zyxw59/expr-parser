@@ -3,64 +3,93 @@ use std::{borrow::Cow, collections::VecDeque};
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
     expression::{Expression, ExpressionKind},
-    operator::{Fixity, Precedence},
-    token::{Token, TokenKind, Tokenizer},
+    operator::Fixity,
+    token::Token,
     Span,
 };
 
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub type ExpressionQueue<'s, C> = VecDeque<
-    Expression<'s, <C as ParseContext<'s>>::BinaryOperator, <C as ParseContext<'s>>::UnaryOperator>,
+pub type ExpressionQueue<'s, C, T> = VecDeque<
+    Expression<
+        's,
+        <C as ParseContext<'s, T>>::BinaryOperator,
+        <C as ParseContext<'s, T>>::UnaryOperator,
+        <C as ParseContext<'s, T>>::Term,
+    >,
 >;
 
-pub struct Parser<'s, T, C: ParseContext<'s>> {
-    tokenizer: T,
+pub struct Parser<'s, I, T, C: ParseContext<'s, T>> {
+    tokenizer: I,
     context: C,
     state: State,
-    stack: Stack<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator>,
-    queue: ExpressionQueue<'s, C>,
+    stack: ParserStack<'s, C, T>,
+    queue: ExpressionQueue<'s, C, T>,
 }
 
-impl<'s, T, C> Parser<'s, T, C>
+impl<'s, I, T, C> Parser<'s, I, T, C>
 where
-    C: ParseContext<'s>,
-    T: Tokenizer<'s>,
+    C: ParseContext<'s, T>,
+    I: Iterator<Item = (Token<'s>, T)>,
 {
-    pub fn new(tokenizer: T, context: C) -> Self {
+    pub fn new(tokenizer: I, context: C) -> Self {
         Parser {
             tokenizer,
             context,
-            state: State::Initial,
+            state: State::PostOperator,
             stack: Stack::new(),
             queue: VecDeque::new(),
         }
     }
 
-    pub fn parse(mut self) -> Result<ExpressionQueue<'s, C>, ParseErrors> {
+    pub fn parse(mut self) -> Result<ExpressionQueue<'s, C, T>, ParseErrors<C::Error>> {
         let mut errors = Vec::new();
-        while !self.tokenizer.is_empty() {
-            if let Err(err) = self.parse_next() {
+        let mut end_of_input = 0;
+        while let Some((token, kind)) = self.tokenizer.next() {
+            end_of_input = token.span().end;
+            if let Err(err) = self.parse_next(token, kind) {
                 errors.push(err);
             }
         }
-        match self.state {
-            State::Initial => self.queue.push_back(Expression {
-                token: Token::new(self.end_of_input_span(), self.source()),
-                kind: ExpressionKind::Null,
-            }),
-            State::PostOperator => errors.push(self.end_of_input(EXPECT_TERM)),
-            State::PostTerm => {}
+        if self.state != State::PostTerm {
+            if let Some(el) = self.stack.pop() {
+                if let Some(kind) = el.operator.expression_kind_no_rhs() {
+                    self.queue.push_back(Expression {
+                        kind,
+                        token: el.token,
+                    });
+                } else {
+                    errors.push(ParseError {
+                        kind: ParseErrorKind::EndOfInput {
+                            expected: EXPECT_TERM,
+                        },
+                        span: Span {
+                            start: end_of_input,
+                            end: end_of_input,
+                        },
+                    })
+                }
+                if el.delimiter.is_some() {
+                    errors.push(ParseError {
+                        kind: ParseErrorKind::UnmatchedLeftDelimiter,
+                        span: el.token.span(),
+                    })
+                }
+            }
         }
         while let Some(el) = self.stack.pop() {
-            if let Some(Err(err)) = self.push_stack_element_to_queue(el, |token, _delim| {
-                Err(ParseError {
+            if let Some(kind) = el.operator.expression_kind_rhs() {
+                self.queue.push_back(Expression {
+                    kind,
+                    token: el.token,
+                });
+            }
+            if el.delimiter.is_some() {
+                errors.push(ParseError {
                     kind: ParseErrorKind::UnmatchedLeftDelimiter,
-                    span: token.span(),
+                    span: el.token.span(),
                 })
-            }) {
-                errors.push(err);
             }
         }
         if errors.is_empty() {
@@ -70,39 +99,68 @@ where
         }
     }
 
-    fn parse_next(&mut self) -> Result<(), ParseError> {
+    fn parse_next(&mut self, token: Token<'s>, kind: T) -> Result<(), ParseError<C::Error>> {
+        let element = self.context.parse_token(token, kind);
         match self.state {
-            State::Initial | State::PostOperator => self.parse_term(),
-            State::PostTerm => self.parse_operator(),
+            State::PostOperator => self.parse_term(token, element),
+            State::PostTerm => self.parse_operator(token, element),
         }
     }
 
-    fn parse_term(&mut self) -> Result<(), ParseError> {
-        let Some((token, kind)) = self.tokenizer.next_token() else {
-            return Ok(());
-        };
-        match kind {
-            TokenKind::Tag => match self.context.get(token).prefix {
-                Prefix::LeftDelimiter {
-                    delimiter,
-                    operator,
-                    rhs_required,
-                } => {
-                    self.stack.push(StackElement {
-                        token,
-                        precedence: Precedence::Base,
-                        delimiter: Some(delimiter),
-                        operator: StackOperator::from_unary_option(operator),
-                    });
-                    self.state = State::post_operator(rhs_required);
-                }
-                Prefix::RightDelimiter { delimiter } => {
-                    if self.state == State::Initial {
+    fn parse_term(
+        &mut self,
+        token: Token<'s>,
+        element: ParserElement<'s, C, T>,
+    ) -> Result<(), ParseError<C::Error>> {
+        match element.prefix {
+            Prefix::LeftDelimiter {
+                delimiter,
+                operator,
+                empty,
+            } => {
+                self.stack.push(StackElement {
+                    token,
+                    precedence: None,
+                    delimiter: Some(delimiter),
+                    operator: StackOperator::unary_delimiter(operator, empty),
+                });
+                self.state = State::PostOperator;
+            }
+            Prefix::RightDelimiter { delimiter } => {
+                self.process_right_delimiter(token, delimiter)?;
+            }
+            Prefix::UnaryOperator {
+                precedence,
+                operator,
+                no_rhs,
+            } => {
+                self.stack.push(StackElement {
+                    token,
+                    precedence: Some(precedence),
+                    delimiter: None,
+                    operator: StackOperator::Unary {
+                        unary: operator,
+                        term: no_rhs,
+                    },
+                });
+                self.state = State::PostOperator;
+            }
+            Prefix::Term { term } => {
+                self.state = State::PostTerm;
+                self.queue.push_back(Expression {
+                    token,
+                    kind: ExpressionKind::Term(term),
+                });
+            }
+            Prefix::None => {
+                self.state = State::PostTerm;
+                if let Some(el) = self.stack.pop() {
+                    if let Some(kind) = el.operator.expression_kind_no_rhs() {
                         self.queue.push_back(Expression {
-                            token,
-                            kind: ExpressionKind::Null,
+                            kind,
+                            token: el.token,
                         });
-                        self.process_right_delimiter(token, delimiter)?;
+                        self.parse_operator(token, element)?;
                     } else {
                         return Err(ParseError {
                             kind: ParseErrorKind::UnexpectedToken {
@@ -110,123 +168,58 @@ where
                             },
                             span: token.span(),
                         });
-                    }
+                    };
                 }
-                Prefix::UnaryOperator {
-                    precedence,
-                    operator,
-                    rhs_required,
-                } => {
-                    self.stack.push(StackElement {
-                        token,
-                        precedence,
-                        delimiter: None,
-                        operator: StackOperator::Unary(operator),
-                    });
-                    self.state = State::post_operator(rhs_required);
-                }
-                // TODO: distinguish tokens which are illegal in prefix position
-                Prefix::None => {
-                    self.state = State::PostTerm;
-                    self.queue.push_back(Expression {
-                        token,
-                        kind: ExpressionKind::Variable,
-                    });
-                }
-            },
-            TokenKind::Integer => {
-                self.state = State::PostTerm;
-                let int = parse_integer(token.as_str()).map_err(|e| ParseError {
-                    kind: e.into(),
-                    span: token.span(),
-                })?;
-                self.queue.push_back(Expression {
-                    token,
-                    kind: ExpressionKind::Integer(int),
-                });
             }
-            TokenKind::Float => {
-                self.state = State::PostTerm;
-                let float = parse_float(token.as_str()).map_err(|e| ParseError {
-                    kind: e.into(),
-                    span: token.span(),
-                })?;
-                self.queue.push_back(Expression {
-                    token,
-                    kind: ExpressionKind::Float(float),
-                });
-            }
-            TokenKind::String => {
-                self.state = State::PostTerm;
-                self.queue.push_back(Expression {
-                    token,
-                    kind: ExpressionKind::String,
-                });
-            }
-            TokenKind::UnterminatedString => {
-                self.state = State::PostTerm;
-                return Err(ParseError {
-                    kind: ParseErrorKind::UnterminatedString,
-                    span: token.span(),
-                });
-            }
-        }
+        };
         Ok(())
     }
 
-    fn parse_operator(&mut self) -> Result<(), ParseError> {
-        let Some((token, kind)) = self.tokenizer.next_token() else {
-            return Ok(());
-        };
-        match kind {
-            TokenKind::Tag => match self.context.get(token).postfix {
-                Postfix::RightDelimiter { delimiter } => {
-                    self.process_right_delimiter(token, delimiter)
-                }
-                Postfix::BinaryOperator {
-                    fixity,
-                    operator,
-                    rhs_required,
-                } => {
-                    self.state = State::post_operator(rhs_required);
-                    self.process_binary_operator(token, fixity, operator)
-                }
-                Postfix::PostfixOperator {
-                    precedence,
-                    operator,
-                } => self.process_postfix_operator(token, precedence, operator),
-                Postfix::LeftDelimiter {
-                    delimiter,
-                    operator,
-                    rhs_required,
-                } => {
-                    self.state = State::post_operator(rhs_required);
-                    // left delimiter in operator position indicates a function call or similar.
-                    // this is indicated by adding a binary operator (with the same token as the
-                    // delimiter) to the stack immediately after the delimiter itself. this
-                    // operator will then function as the "function application" operator (or a
-                    // related operator, such as "struct construction") when it is popped from the
-                    // stack after the closing delimiter is matched
-                    self.stack.push(StackElement {
-                        token,
-                        precedence: Precedence::Base,
-                        delimiter: Some(delimiter),
-                        operator: StackOperator::Binary(operator),
-                    });
-                    Ok(())
-                }
-                Postfix::None => {
-                    self.state = State::PostOperator;
-                    Err(ParseError {
-                        kind: ParseErrorKind::UnexpectedToken {
-                            expected: EXPECT_OPERATOR,
-                        },
-                        span: token.span(),
-                    })
-                }
-            },
-            _ => {
+    fn parse_operator(
+        &mut self,
+        token: Token<'s>,
+        element: ParserElement<'s, C, T>,
+    ) -> Result<(), ParseError<C::Error>> {
+        match element.postfix {
+            Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(token, delimiter),
+            Postfix::BinaryOperator {
+                fixity,
+                operator,
+                no_rhs,
+            } => {
                 self.state = State::PostOperator;
+                self.process_binary_operator(token, fixity, operator, no_rhs)
+            }
+            Postfix::PostfixOperator {
+                precedence,
+                operator,
+            } => self.process_postfix_operator(token, precedence, operator),
+            Postfix::LeftDelimiter {
+                delimiter,
+                operator,
+                empty,
+            } => {
+                self.state = State::PostOperator;
+                // left delimiter in operator position indicates a function call or similar.
+                // this is indicated by adding a binary operator (with the same token as the
+                // delimiter) to the stack immediately after the delimiter itself. this
+                // operator will then function as the "function application" operator (or a
+                // related operator, such as "struct construction") when it is popped from the
+                // stack after the closing delimiter is matched
+                self.stack.push(StackElement {
+                    token,
+                    precedence: None,
+                    delimiter: Some(delimiter),
+                    operator: StackOperator::Binary {
+                        binary: operator,
+                        unary: empty,
+                    },
+                });
+                Ok(())
+            }
+            Postfix::None => {
+                self.state = State::PostOperator;
+                // TODO(#11) here is where we would support implicit operators
                 Err(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
                         expected: EXPECT_OPERATOR,
@@ -241,22 +234,55 @@ where
         &mut self,
         token: Token<'s>,
         right: C::Delimiter,
-    ) -> Result<(), ParseError> {
-        self.state = State::PostTerm;
-        while let Some(el) = self.stack.pop() {
-            if let Some(result) = self.push_stack_element_to_queue(el, |left_token, left| {
-                if left.matches(&right) {
+    ) -> Result<(), ParseError<C::Error>> {
+        // If we don't have a right-hand operand, demote the operator on the top of the stack
+        // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
+        // requires a right-hand operand), then construct an error. We don't early return with this
+        // error, though, since we still want to find the matching delimiter so that we can
+        // continue parsing.
+        let no_rhs_result = if self.state != State::PostTerm {
+            if let Some(el) = self.stack.pop() {
+                let no_rhs_result = if let Some(kind) = el.operator.expression_kind_no_rhs() {
+                    self.queue.push_back(Expression {
+                        kind,
+                        token: el.token,
+                    });
                     Ok(())
                 } else {
                     Err(ParseError {
-                        kind: ParseErrorKind::MismatchedDelimiter {
-                            opening: left_token.span(),
+                        kind: ParseErrorKind::UnexpectedToken {
+                            expected: EXPECT_TERM,
                         },
                         span: token.span(),
                     })
+                };
+                if let Some(left) = el.delimiter {
+                    self.state = State::PostTerm;
+                    return Self::check_delimiter_match(
+                        no_rhs_result,
+                        left,
+                        el.token,
+                        right,
+                        token,
+                    );
                 }
-            }) {
-                return result;
+                no_rhs_result
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        self.state = State::PostTerm;
+        while let Some(el) = self.stack.pop() {
+            if let Some(kind) = el.operator.expression_kind_rhs() {
+                self.queue.push_back(Expression {
+                    kind,
+                    token: el.token,
+                });
+            }
+            if let Some(left) = el.delimiter {
+                return Self::check_delimiter_match(no_rhs_result, left, el.token, right, token);
             }
         }
         Err(ParseError {
@@ -265,18 +291,44 @@ where
         })
     }
 
+    fn check_delimiter_match(
+        no_rhs_result: Result<(), ParseError<C::Error>>,
+        left: C::Delimiter,
+        left_token: Token<'s>,
+        right: C::Delimiter,
+        right_token: Token<'s>,
+    ) -> Result<(), ParseError<C::Error>> {
+        if left.matches(&right) {
+            no_rhs_result
+        } else {
+            // Ideally we would return both errors here, but that would be hard to work
+            // into the normal `Result` paradigm. So instead, we just return the
+            // "unexpected token" error if it exists, or the "mismatched delimiter" error
+            // if it doesn't
+            no_rhs_result.and_then(|()| {
+                Err(ParseError {
+                    kind: ParseErrorKind::MismatchedDelimiter {
+                        opening: left_token.span(),
+                    },
+                    span: right_token.span(),
+                })
+            })
+        }
+    }
+
     fn process_binary_operator(
         &mut self,
         token: Token<'s>,
-        fixity: Fixity,
-        operator: C::BinaryOperator,
-    ) -> Result<(), ParseError> {
-        self.pop_while_lower_precedence(fixity, token.span())?;
+        fixity: Fixity<C::Precedence>,
+        binary: C::BinaryOperator,
+        unary: Option<C::UnaryOperator>,
+    ) -> Result<(), ParseError<C::Error>> {
+        self.pop_while_lower_precedence(&fixity)?;
         self.stack.push(StackElement {
             token,
-            precedence: fixity.precedence(),
+            precedence: Some(fixity.into_precedence()),
             delimiter: None,
-            operator: StackOperator::Binary(operator),
+            operator: StackOperator::Binary { binary, unary },
         });
         Ok(())
     }
@@ -284,12 +336,12 @@ where
     fn process_postfix_operator(
         &mut self,
         token: Token<'s>,
-        precedence: Precedence,
+        precedence: C::Precedence,
         operator: C::UnaryOperator,
-    ) -> Result<(), ParseError> {
+    ) -> Result<(), ParseError<C::Error>> {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
-        self.pop_while_lower_precedence(fixity, token.span())?;
+        self.pop_while_lower_precedence(&fixity)?;
         self.queue.push_back(Expression {
             token,
             kind: ExpressionKind::UnaryOperator(operator),
@@ -297,112 +349,84 @@ where
         Ok(())
     }
 
-    fn pop_while_lower_precedence(&mut self, fixity: Fixity, span: Span) -> Result<(), ParseError> {
+    fn pop_while_lower_precedence(
+        &mut self,
+        fixity: &Fixity<C::Precedence>,
+    ) -> Result<(), ParseError<C::Error>> {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
-            self.push_stack_element_to_queue(el, |_, _| {
-                Err(ParseError {
-                    kind: ParseErrorKind::OperatorWithBasePrecedence,
-                    span,
-                })
-            })
-            .transpose()?;
+            if let Some(kind) = el.operator.expression_kind_rhs() {
+                self.queue.push_back(Expression {
+                    kind,
+                    token: el.token,
+                });
+            }
         }
         Ok(())
     }
-
-    /// Push the operator from the stack element onto the queue. If the stack element has a
-    /// delimiter, the provided function will be called.
-    fn push_stack_element_to_queue(
-        &mut self,
-        el: StackElement<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator>,
-        delimiter_predicate: impl FnOnce(Token<'s>, C::Delimiter) -> Result<(), ParseError>,
-    ) -> Option<Result<(), ParseError>> {
-        match el.operator {
-            StackOperator::Unary(op) => self.queue.push_back(Expression {
-                token: el.token,
-                kind: ExpressionKind::UnaryOperator(op),
-            }),
-            StackOperator::Binary(op) => self.queue.push_back(Expression {
-                token: el.token,
-                kind: ExpressionKind::BinaryOperator(op),
-            }),
-            StackOperator::None => {}
-        };
-        el.delimiter
-            .map(|delim| delimiter_predicate(el.token, delim))
-    }
-
-    fn source(&self) -> &'s str {
-        self.tokenizer.source()
-    }
-
-    fn end_of_input_span(&self) -> Span {
-        let len = self.source().len();
-        Span {
-            start: len,
-            end: len,
-        }
-    }
-
-    fn end_of_input(&self, expected: &'static str) -> ParseError {
-        ParseError {
-            kind: ParseErrorKind::EndOfInput { expected },
-            span: self.end_of_input_span(),
-        }
-    }
 }
 
-pub trait ParseContext<'s> {
+pub trait ParseContext<'s, T> {
+    type Precedence: Ord;
     type Delimiter: Delimiter;
     type BinaryOperator;
     type UnaryOperator;
+    type Term;
+    type Error;
 
-    fn get(
-        &self,
-        token: Token<'s>,
-    ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator>;
+    fn parse_token(&self, token: Token<'s>, kind: T) -> ParserElement<'s, Self, T>;
 }
 
 pub trait Delimiter {
     fn matches(&self, other: &Self) -> bool;
 }
 
-pub struct Element<D, B, U> {
-    pub prefix: Prefix<D, U>,
-    pub postfix: Postfix<D, B, U>,
+pub struct Element<P, D, B, U, T> {
+    pub prefix: Prefix<P, D, U, T>,
+    pub postfix: Postfix<P, D, B, U>,
 }
 
-pub enum Prefix<D, U> {
+pub type ParserElement<'s, C, T> = Element<
+    <C as ParseContext<'s, T>>::Precedence,
+    <C as ParseContext<'s, T>>::Delimiter,
+    <C as ParseContext<'s, T>>::BinaryOperator,
+    <C as ParseContext<'s, T>>::UnaryOperator,
+    <C as ParseContext<'s, T>>::Term,
+>;
+
+pub enum Prefix<P, D, U, T> {
     UnaryOperator {
-        precedence: Precedence,
+        precedence: P,
         operator: U,
-        rhs_required: bool,
+        no_rhs: Option<T>,
     },
     LeftDelimiter {
         delimiter: D,
         operator: Option<U>,
-        rhs_required: bool,
+        empty: Option<T>,
     },
     RightDelimiter {
         delimiter: D,
     },
+    Term {
+        term: T,
+    },
     None,
 }
 
-pub enum Postfix<D, B, U> {
+pub enum Postfix<P, D, B, U> {
     BinaryOperator {
-        fixity: Fixity,
+        fixity: Fixity<P>,
         operator: B,
-        rhs_required: bool,
+        no_rhs: Option<U>,
     },
     PostfixOperator {
-        precedence: Precedence,
+        precedence: P,
         operator: U,
     },
     LeftDelimiter {
         delimiter: D,
         operator: B,
-        rhs_required: bool,
+        empty: Option<U>,
     },
     RightDelimiter {
         delimiter: D,
@@ -412,51 +436,52 @@ pub enum Postfix<D, B, U> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum State {
-    Initial,
     PostOperator,
     PostTerm,
 }
 
-impl State {
-    /// Returns the next state after an operator or similar. If the right-hand-side is required,
-    /// the next state will be `PostOperator`, and if it is not required, the next state will be
-    /// `Initial`
-    fn post_operator(rhs_required: bool) -> Self {
-        if rhs_required {
-            Self::PostOperator
-        } else {
-            Self::Initial
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
-struct Stack<'s, D, B, U>(Vec<StackElement<'s, D, B, U>>);
+struct Stack<'s, P, D, B, U, T>(Vec<StackElement<'s, P, D, B, U, T>>);
 
-impl<'s, D, B, U> Default for Stack<'s, D, B, U> {
+type ParserStack<'s, C, T> = Stack<
+    's,
+    <C as ParseContext<'s, T>>::Precedence,
+    <C as ParseContext<'s, T>>::Delimiter,
+    <C as ParseContext<'s, T>>::BinaryOperator,
+    <C as ParseContext<'s, T>>::UnaryOperator,
+    <C as ParseContext<'s, T>>::Term,
+>;
+
+impl<'s, P, D, B, U, T> Default for Stack<'s, P, D, B, U, T> {
     fn default() -> Self {
         Stack(Default::default())
     }
 }
 
-impl<'s, D, B, U> Stack<'s, D, B, U> {
+impl<'s, P, D, B, U, T> Stack<'s, P, D, B, U, T> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<'s, D, B, U>) {
+    fn push(&mut self, element: StackElement<'s, P, D, B, U, T>) {
         self.0.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<'s, D, B, U>> {
+    fn pop(&mut self) -> Option<StackElement<'s, P, D, B, U, T>> {
         self.0.pop()
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
-    fn pop_if_lower_precedence(&mut self, fixity: Fixity) -> Option<StackElement<'s, D, B, U>> {
+    fn pop_if_lower_precedence(
+        &mut self,
+        fixity: &Fixity<P>,
+    ) -> Option<StackElement<'s, P, D, B, U, T>>
+    where
+        P: Ord,
+    {
         if match fixity {
-            Fixity::Left(prec) => prec <= self.precedence(),
-            Fixity::Right(prec) => prec < self.precedence(),
+            Fixity::Left(prec) => Some(prec) <= self.precedence(),
+            Fixity::Right(prec) => Some(prec) < self.precedence(),
         } {
             self.pop()
         } else {
@@ -464,40 +489,52 @@ impl<'s, D, B, U> Stack<'s, D, B, U> {
         }
     }
 
-    fn precedence(&self) -> Precedence {
-        self.0
-            .last()
-            .map(StackElement::precedence)
-            .unwrap_or(Precedence::Base)
+    fn precedence(&self) -> Option<&P> {
+        self.0.last().and_then(StackElement::precedence)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct StackElement<'s, D, B, U> {
+struct StackElement<'s, P, D, B, U, T> {
     token: Token<'s>,
-    precedence: Precedence,
+    precedence: Option<P>,
     delimiter: Option<D>,
-    operator: StackOperator<B, U>,
+    operator: StackOperator<B, U, T>,
 }
 
-impl<'s, D, B, U> StackElement<'s, D, B, U> {
-    fn precedence(&self) -> Precedence {
-        self.precedence
+impl<'s, P, D, B, U, T> StackElement<'s, P, D, B, U, T> {
+    fn precedence(&self) -> Option<&P> {
+        self.precedence.as_ref()
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-enum StackOperator<B, U> {
-    None,
-    Binary(B),
-    Unary(U),
+enum StackOperator<B, U, T> {
+    None { term: Option<T> },
+    Binary { binary: B, unary: Option<U> },
+    Unary { unary: U, term: Option<T> },
 }
 
-impl<B, U> StackOperator<B, U> {
-    fn from_unary_option(option: Option<U>) -> Self {
-        match option {
-            None => Self::None,
-            Some(op) => Self::Unary(op),
+impl<B, U, T> StackOperator<B, U, T> {
+    fn unary_delimiter(unary: Option<U>, term: Option<T>) -> Self {
+        match unary {
+            None => Self::None { term },
+            Some(unary) => Self::Unary { unary, term },
+        }
+    }
+
+    fn expression_kind_rhs(self) -> Option<ExpressionKind<B, U, T>> {
+        match self {
+            Self::None { .. } => None,
+            Self::Binary { binary, .. } => Some(ExpressionKind::BinaryOperator(binary)),
+            Self::Unary { unary, .. } => Some(ExpressionKind::UnaryOperator(unary)),
+        }
+    }
+
+    fn expression_kind_no_rhs(self) -> Option<ExpressionKind<B, U, T>> {
+        match self {
+            Self::None { term } | Self::Unary { term, .. } => term.map(ExpressionKind::Term),
+            Self::Binary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
         }
     }
 }
@@ -542,11 +579,15 @@ mod tests {
     };
     use crate::{
         error::ParseErrorKind,
-        operator::{Fixity, Precedence},
-        token::{SimpleTokenizer, Token},
+        expression::{Expression, ExpressionKind},
+        operator::Fixity,
+        token::{SimpleCharSetTokenKind, SimpleTokenizer, Token},
     };
 
     struct SimpleExprContext;
+
+    #[derive(Debug, Eq, PartialEq, thiserror::Error)]
+    enum SimpleParserError {}
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum SimpleDelimiter {
@@ -555,33 +596,55 @@ mod tests {
         Pipe,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    enum SimplePrecedence {
+        /// Comma
+        Comma,
+        /// Additive operators, such as `+` and `-`
+        Additive,
+        /// Multiplicative operators, such as `*` and `/`, as well as unary minus.
+        Multiplicative,
+        /// Exponential operators, such as `^` and `!`
+        Exponential,
+    }
+
     impl Delimiter for SimpleDelimiter {
         fn matches(&self, other: &Self) -> bool {
             self == other
         }
     }
 
-    impl<'s> ParseContext<'s> for SimpleExprContext {
+    impl<'s> ParseContext<'s, SimpleCharSetTokenKind> for SimpleExprContext {
+        type Error = SimpleParserError;
+        type Precedence = SimplePrecedence;
         type Delimiter = SimpleDelimiter;
         type BinaryOperator = &'s str;
         type UnaryOperator = &'s str;
+        type Term = &'s str;
 
-        fn get(
+        fn parse_token(
             &self,
             token: Token<'s>,
-        ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator> {
+            _kind: SimpleCharSetTokenKind,
+        ) -> Element<
+            Self::Precedence,
+            Self::Delimiter,
+            Self::BinaryOperator,
+            Self::UnaryOperator,
+            Self::Term,
+        > {
             let s = token.as_str();
             match s {
                 "(" => Element {
                     prefix: Prefix::LeftDelimiter {
                         delimiter: SimpleDelimiter::Paren,
                         operator: None,
-                        rhs_required: true,
+                        empty: None,
                     },
                     postfix: Postfix::LeftDelimiter {
                         delimiter: SimpleDelimiter::Paren,
                         operator: s,
-                        rhs_required: false,
+                        empty: Some("()"),
                     },
                 },
                 ")" => Element {
@@ -596,7 +659,7 @@ mod tests {
                     prefix: Prefix::LeftDelimiter {
                         delimiter: SimpleDelimiter::SquareBracket,
                         operator: Some(s),
-                        rhs_required: false,
+                        empty: Some("[]"),
                     },
                     postfix: Postfix::None,
                 },
@@ -612,7 +675,7 @@ mod tests {
                     prefix: Prefix::LeftDelimiter {
                         delimiter: SimpleDelimiter::Pipe,
                         operator: Some(s),
-                        rhs_required: true,
+                        empty: None,
                     },
                     postfix: Postfix::RightDelimiter {
                         delimiter: SimpleDelimiter::Pipe,
@@ -621,59 +684,67 @@ mod tests {
                 "," => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Comma),
+                        fixity: Fixity::Left(SimplePrecedence::Comma),
                         operator: s,
-                        rhs_required: false,
+                        no_rhs: Some("(,)"),
                     },
                 },
                 "-" => Element {
                     prefix: Prefix::UnaryOperator {
-                        precedence: Precedence::Multiplicative,
+                        precedence: SimplePrecedence::Multiplicative,
                         operator: s,
-                        rhs_required: true,
+                        no_rhs: None,
                     },
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Additive),
+                        fixity: Fixity::Left(SimplePrecedence::Additive),
                         operator: s,
-                        rhs_required: true,
+                        no_rhs: None,
                     },
                 },
                 "+" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Additive),
+                        fixity: Fixity::Left(SimplePrecedence::Additive),
                         operator: s,
-                        rhs_required: true,
+                        no_rhs: None,
                     },
                 },
                 "*" | "/" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Multiplicative),
+                        fixity: Fixity::Left(SimplePrecedence::Multiplicative),
                         operator: s,
-                        rhs_required: true,
+                        no_rhs: None,
                     },
                 },
                 "^" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Right(Precedence::Exponential),
+                        fixity: Fixity::Right(SimplePrecedence::Exponential),
                         operator: s,
-                        rhs_required: true,
+                        no_rhs: None,
                     },
                 },
                 "!" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::PostfixOperator {
-                        precedence: Precedence::Exponential,
+                        precedence: SimplePrecedence::Exponential,
                         operator: s,
                     },
                 },
                 _ => Element {
-                    prefix: Prefix::None,
+                    prefix: Prefix::Term { term: s },
                     postfix: Postfix::None,
                 },
             }
+        }
+    }
+
+    fn expr_to_str<'s>(expr: Expression<'s, &'s str, &'s str, &'s str>) -> &'s str {
+        match expr.kind {
+            ExpressionKind::BinaryOperator(s) => s,
+            ExpressionKind::UnaryOperator(s) => s,
+            ExpressionKind::Term(s) => s,
         }
     }
 
@@ -683,15 +754,17 @@ mod tests {
     #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
     #[test_case("[1, 2, 3, 4]", "1 2 , 3 , 4 , [" ; "delimiter operators" )]
     #[test_case("[1, (2, 3), 4]", "1 2 3 , , 4 , [" ; "nested delimiter operators" )]
-    #[test_case("[ ]", "] [" ; "empty list" )]
-    #[test_case("f()", "f ) (" ; "empty function call" )]
-    #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , ] , [" ; "trailing comma" )]
+    #[test_case("[ ]", "[]" ; "empty list" )]
+    #[test_case("[ ] + [ ]", "[] [] +" ; "adding lists" )]
+    #[test_case("f()", "f ()" ; "empty function call" )]
+    #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , (,) [" ; "trailing comma" )]
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
+    #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
             .parse()?
             .into_iter()
-            .map(|expr| expr.token.as_str())
+            .map(expr_to_str)
             .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
@@ -708,7 +781,14 @@ mod tests {
     #[test_case("[ 1 )", &[
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
     ] ; "mismatched delimiters" )]
-    fn parse_expression_fail(input: &str, expected: &[(ParseErrorKind, Range<usize>)]) {
+    #[test_case("1 + * 2", &[
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 4..5),
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_OPERATOR }, 6..7),
+    ] ; "extra operator" )]
+    fn parse_expression_fail(
+        input: &str,
+        expected: &[(ParseErrorKind<SimpleParserError>, Range<usize>)],
+    ) {
         let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
             .parse()
             .unwrap_err()
