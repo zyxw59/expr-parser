@@ -227,20 +227,6 @@ where
                 })
             }
         }
-        /*
-         match kind {
-            TokenKind::Tag => ,
-            _ => {
-                self.state = State::PostOperator;
-                Err(ParseError {
-                    kind: ParseErrorKind::UnexpectedToken {
-                        expected: EXPECT_OPERATOR,
-                    },
-                    span: token.span(),
-                })
-            }
-        }
-        */
     }
 
     fn process_right_delimiter(
