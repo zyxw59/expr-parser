@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::VecDeque};
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
     expression::{Expression, ExpressionKind},
-    operator::{Fixity, Precedence},
+    operator::Fixity,
     token::Token,
     Span,
 };
@@ -24,7 +24,7 @@ pub struct Parser<'s, I, T, C: ParseContext<'s, T>> {
     tokenizer: I,
     context: C,
     state: State,
-    stack: Stack<'s, C::Delimiter, C::BinaryOperator, C::UnaryOperator, C::Term>,
+    stack: ParserStack<'s, C, T>,
     queue: ExpressionQueue<'s, C, T>,
 }
 
@@ -115,7 +115,7 @@ where
             } => {
                 self.stack.push(StackElement {
                     token,
-                    precedence: Precedence::Base,
+                    precedence: None,
                     delimiter: Some(delimiter),
                     operator: StackOperator::unary_delimiter(operator, empty),
                 });
@@ -131,7 +131,7 @@ where
             } => {
                 self.stack.push(StackElement {
                     token,
-                    precedence,
+                    precedence: Some(precedence),
                     delimiter: None,
                     operator: StackOperator::Unary {
                         unary: operator,
@@ -189,7 +189,7 @@ where
                 // stack after the closing delimiter is matched
                 self.stack.push(StackElement {
                     token,
-                    precedence: Precedence::Base,
+                    precedence: None,
                     delimiter: Some(delimiter),
                     operator: StackOperator::Binary {
                         binary: operator,
@@ -313,14 +313,14 @@ where
     fn process_binary_operator(
         &mut self,
         token: Token<'s>,
-        fixity: Fixity,
+        fixity: Fixity<C::Precedence>,
         binary: C::BinaryOperator,
         unary: Option<C::UnaryOperator>,
     ) -> Result<(), ParseError<C::Error>> {
-        self.pop_while_lower_precedence(fixity, token.span())?;
+        self.pop_while_lower_precedence(&fixity)?;
         self.stack.push(StackElement {
             token,
-            precedence: fixity.precedence(),
+            precedence: Some(fixity.into_precedence()),
             delimiter: None,
             operator: StackOperator::Binary { binary, unary },
         });
@@ -330,12 +330,12 @@ where
     fn process_postfix_operator(
         &mut self,
         token: Token<'s>,
-        precedence: Precedence,
+        precedence: C::Precedence,
         operator: C::UnaryOperator,
     ) -> Result<(), ParseError<C::Error>> {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
-        self.pop_while_lower_precedence(fixity, token.span())?;
+        self.pop_while_lower_precedence(&fixity)?;
         self.queue.push_back(Expression {
             token,
             kind: ExpressionKind::UnaryOperator(operator),
@@ -345,8 +345,7 @@ where
 
     fn pop_while_lower_precedence(
         &mut self,
-        fixity: Fixity,
-        span: Span,
+        fixity: &Fixity<C::Precedence>,
     ) -> Result<(), ParseError<C::Error>> {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
@@ -355,43 +354,42 @@ where
                     token: el.token,
                 });
             }
-            if el.delimiter.is_some() {
-                return Err(ParseError {
-                    kind: ParseErrorKind::OperatorWithBasePrecedence,
-                    span,
-                });
-            }
         }
         Ok(())
     }
 }
 
 pub trait ParseContext<'s, T> {
+    type Precedence: Ord;
     type Delimiter: Delimiter;
     type BinaryOperator;
     type UnaryOperator;
     type Term;
     type Error;
 
-    fn parse_token(
-        &self,
-        token: Token<'s>,
-        kind: T,
-    ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator, Self::Term>;
+    fn parse_token(&self, token: Token<'s>, kind: T) -> ParserElement<'s, Self, T>;
 }
 
 pub trait Delimiter {
     fn matches(&self, other: &Self) -> bool;
 }
 
-pub struct Element<D, B, U, T> {
-    pub prefix: Prefix<D, U, T>,
-    pub postfix: Postfix<D, B, U>,
+pub struct Element<P, D, B, U, T> {
+    pub prefix: Prefix<P, D, U, T>,
+    pub postfix: Postfix<P, D, B, U>,
 }
 
-pub enum Prefix<D, U, T> {
+pub type ParserElement<'s, C, T> = Element<
+    <C as ParseContext<'s, T>>::Precedence,
+    <C as ParseContext<'s, T>>::Delimiter,
+    <C as ParseContext<'s, T>>::BinaryOperator,
+    <C as ParseContext<'s, T>>::UnaryOperator,
+    <C as ParseContext<'s, T>>::Term,
+>;
+
+pub enum Prefix<P, D, U, T> {
     UnaryOperator {
-        precedence: Precedence,
+        precedence: P,
         operator: U,
         no_rhs: Option<T>,
     },
@@ -409,14 +407,14 @@ pub enum Prefix<D, U, T> {
     None,
 }
 
-pub enum Postfix<D, B, U> {
+pub enum Postfix<P, D, B, U> {
     BinaryOperator {
-        fixity: Fixity,
+        fixity: Fixity<P>,
         operator: B,
         no_rhs: Option<U>,
     },
     PostfixOperator {
-        precedence: Precedence,
+        precedence: P,
         operator: U,
     },
     LeftDelimiter {
@@ -437,32 +435,47 @@ enum State {
 }
 
 #[derive(Clone, Debug)]
-struct Stack<'s, D, B, U, T>(Vec<StackElement<'s, D, B, U, T>>);
+struct Stack<'s, P, D, B, U, T>(Vec<StackElement<'s, P, D, B, U, T>>);
 
-impl<'s, D, B, U, T> Default for Stack<'s, D, B, U, T> {
+type ParserStack<'s, C, T> = Stack<
+    's,
+    <C as ParseContext<'s, T>>::Precedence,
+    <C as ParseContext<'s, T>>::Delimiter,
+    <C as ParseContext<'s, T>>::BinaryOperator,
+    <C as ParseContext<'s, T>>::UnaryOperator,
+    <C as ParseContext<'s, T>>::Term,
+>;
+
+impl<'s, P, D, B, U, T> Default for Stack<'s, P, D, B, U, T> {
     fn default() -> Self {
         Stack(Default::default())
     }
 }
 
-impl<'s, D, B, U, T> Stack<'s, D, B, U, T> {
+impl<'s, P, D, B, U, T> Stack<'s, P, D, B, U, T> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<'s, D, B, U, T>) {
+    fn push(&mut self, element: StackElement<'s, P, D, B, U, T>) {
         self.0.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<'s, D, B, U, T>> {
+    fn pop(&mut self) -> Option<StackElement<'s, P, D, B, U, T>> {
         self.0.pop()
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
-    fn pop_if_lower_precedence(&mut self, fixity: Fixity) -> Option<StackElement<'s, D, B, U, T>> {
+    fn pop_if_lower_precedence(
+        &mut self,
+        fixity: &Fixity<P>,
+    ) -> Option<StackElement<'s, P, D, B, U, T>>
+    where
+        P: Ord,
+    {
         if match fixity {
-            Fixity::Left(prec) => prec <= self.precedence(),
-            Fixity::Right(prec) => prec < self.precedence(),
+            Fixity::Left(prec) => Some(prec) <= self.precedence(),
+            Fixity::Right(prec) => Some(prec) < self.precedence(),
         } {
             self.pop()
         } else {
@@ -470,25 +483,22 @@ impl<'s, D, B, U, T> Stack<'s, D, B, U, T> {
         }
     }
 
-    fn precedence(&self) -> Precedence {
-        self.0
-            .last()
-            .map(StackElement::precedence)
-            .unwrap_or(Precedence::Base)
+    fn precedence(&self) -> Option<&P> {
+        self.0.last().and_then(StackElement::precedence)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct StackElement<'s, D, B, U, T> {
+struct StackElement<'s, P, D, B, U, T> {
     token: Token<'s>,
-    precedence: Precedence,
+    precedence: Option<P>,
     delimiter: Option<D>,
     operator: StackOperator<B, U, T>,
 }
 
-impl<'s, D, B, U, T> StackElement<'s, D, B, U, T> {
-    fn precedence(&self) -> Precedence {
-        self.precedence
+impl<'s, P, D, B, U, T> StackElement<'s, P, D, B, U, T> {
+    fn precedence(&self) -> Option<&P> {
+        self.precedence.as_ref()
     }
 }
 
@@ -564,7 +574,7 @@ mod tests {
     use crate::{
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
-        operator::{Fixity, Precedence},
+        operator::Fixity,
         token::{SimpleCharSetTokenKind, SimpleTokenizer, Token},
     };
 
@@ -580,6 +590,18 @@ mod tests {
         Pipe,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    enum SimplePrecedence {
+        /// Comma
+        Comma,
+        /// Additive operators, such as `+` and `-`
+        Additive,
+        /// Multiplicative operators, such as `*` and `/`, as well as unary minus.
+        Multiplicative,
+        /// Exponential operators, such as `^` and `!`
+        Exponential,
+    }
+
     impl Delimiter for SimpleDelimiter {
         fn matches(&self, other: &Self) -> bool {
             self == other
@@ -588,6 +610,7 @@ mod tests {
 
     impl<'s> ParseContext<'s, SimpleCharSetTokenKind> for SimpleExprContext {
         type Error = SimpleParserError;
+        type Precedence = SimplePrecedence;
         type Delimiter = SimpleDelimiter;
         type BinaryOperator = &'s str;
         type UnaryOperator = &'s str;
@@ -597,8 +620,13 @@ mod tests {
             &self,
             token: Token<'s>,
             _kind: SimpleCharSetTokenKind,
-        ) -> Element<Self::Delimiter, Self::BinaryOperator, Self::UnaryOperator, Self::Term>
-        {
+        ) -> Element<
+            Self::Precedence,
+            Self::Delimiter,
+            Self::BinaryOperator,
+            Self::UnaryOperator,
+            Self::Term,
+        > {
             let s = token.as_str();
             match s {
                 "(" => Element {
@@ -650,19 +678,19 @@ mod tests {
                 "," => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Comma),
+                        fixity: Fixity::Left(SimplePrecedence::Comma),
                         operator: s,
                         no_rhs: Some("(,)"),
                     },
                 },
                 "-" => Element {
                     prefix: Prefix::UnaryOperator {
-                        precedence: Precedence::Multiplicative,
+                        precedence: SimplePrecedence::Multiplicative,
                         operator: s,
                         no_rhs: None,
                     },
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Additive),
+                        fixity: Fixity::Left(SimplePrecedence::Additive),
                         operator: s,
                         no_rhs: None,
                     },
@@ -670,7 +698,7 @@ mod tests {
                 "+" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Additive),
+                        fixity: Fixity::Left(SimplePrecedence::Additive),
                         operator: s,
                         no_rhs: None,
                     },
@@ -678,7 +706,7 @@ mod tests {
                 "*" | "/" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(Precedence::Multiplicative),
+                        fixity: Fixity::Left(SimplePrecedence::Multiplicative),
                         operator: s,
                         no_rhs: None,
                     },
@@ -686,7 +714,7 @@ mod tests {
                 "^" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Right(Precedence::Exponential),
+                        fixity: Fixity::Right(SimplePrecedence::Exponential),
                         operator: s,
                         no_rhs: None,
                     },
@@ -694,7 +722,7 @@ mod tests {
                 "!" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::PostfixOperator {
-                        precedence: Precedence::Exponential,
+                        precedence: SimplePrecedence::Exponential,
                         operator: s,
                     },
                 },
