@@ -100,14 +100,19 @@ where
     }
 
     fn parse_next(&mut self, token: Token<'s>, kind: T) -> Result<(), ParseError<C::Error>> {
+        let element = self.context.parse_token(token, kind);
         match self.state {
-            State::PostOperator => self.parse_term(token, kind),
-            State::PostTerm => self.parse_operator(token, kind),
+            State::PostOperator => self.parse_term(token, element),
+            State::PostTerm => self.parse_operator(token, element),
         }
     }
 
-    fn parse_term(&mut self, token: Token<'s>, kind: T) -> Result<(), ParseError<C::Error>> {
-        match self.context.parse_token(token, kind).prefix {
+    fn parse_term(
+        &mut self,
+        token: Token<'s>,
+        element: ParserElement<'s, C, T>,
+    ) -> Result<(), ParseError<C::Error>> {
+        match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
                 operator,
@@ -149,19 +154,33 @@ where
             }
             Prefix::None => {
                 self.state = State::PostTerm;
-                return Err(ParseError {
-                    kind: ParseErrorKind::UnexpectedToken {
-                        expected: EXPECT_TERM,
-                    },
-                    span: token.span(),
-                });
+                if let Some(el) = self.stack.pop() {
+                    if let Some(kind) = el.operator.expression_kind_no_rhs() {
+                        self.queue.push_back(Expression {
+                            kind,
+                            token: el.token,
+                        });
+                        self.parse_operator(token, element)?;
+                    } else {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::UnexpectedToken {
+                                expected: EXPECT_TERM,
+                            },
+                            span: token.span(),
+                        });
+                    };
+                }
             }
         };
         Ok(())
     }
 
-    fn parse_operator(&mut self, token: Token<'s>, kind: T) -> Result<(), ParseError<C::Error>> {
-        match self.context.parse_token(token, kind).postfix {
+    fn parse_operator(
+        &mut self,
+        token: Token<'s>,
+        element: ParserElement<'s, C, T>,
+    ) -> Result<(), ParseError<C::Error>> {
+        match element.postfix {
             Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(token, delimiter),
             Postfix::BinaryOperator {
                 fixity,
@@ -753,6 +772,7 @@ mod tests {
     #[test_case("f()", "f ()" ; "empty function call" )]
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , (,) [" ; "trailing comma" )]
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
+    #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
             .parse()?
@@ -774,6 +794,10 @@ mod tests {
     #[test_case("[ 1 )", &[
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
     ] ; "mismatched delimiters" )]
+    #[test_case("1 + * 2", &[
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 4..5),
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_OPERATOR }, 6..7),
+    ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
         expected: &[(ParseErrorKind<SimpleParserError>, Range<usize>)],
