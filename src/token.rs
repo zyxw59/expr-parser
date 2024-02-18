@@ -244,15 +244,15 @@ pub struct Token<'s> {
 }
 
 impl<'s> Token<'s> {
-    pub fn new(span: Span, source: &'s str) -> Self {
+    pub const fn new(span: Span, source: &'s str) -> Self {
         Token { span, source }
     }
 
-    pub fn span(&self) -> Span {
+    pub const fn span(&self) -> Span {
         self.span
     }
 
-    pub fn source(&self) -> &'s str {
+    pub const fn source(&self) -> &'s str {
         self.source
     }
 
