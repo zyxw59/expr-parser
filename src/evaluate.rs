@@ -23,6 +23,13 @@ pub trait EvaluationContext<'s, B, U, T> {
     ) -> Result<Self::Value, Self::Error>;
 
     fn evaluate_term(&self, token: Token<'s>, term: T) -> Result<Self::Value, Self::Error>;
+
+    fn evaluate<I>(&self, input: I) -> Result<Self::Value, Self::Error>
+    where
+        I: IntoIterator<Item = Expression<'s, B, U, T>>,
+    {
+        evaluate(self, input)
+    }
 }
 
 /// Evaluate the input expression queue using the provided `EvaluationContext`.
@@ -33,7 +40,7 @@ pub trait EvaluationContext<'s, B, U, T> {
 /// values for the operator's arguments. It will also panic if the input is empty.
 pub fn evaluate<'s, C, I, B, U, T>(context: &C, input: I) -> Result<C::Value, C::Error>
 where
-    C: EvaluationContext<'s, B, U, T>,
+    C: EvaluationContext<'s, B, U, T> + ?Sized,
     I: IntoIterator<Item = Expression<'s, B, U, T>>,
 {
     const STACK_EMPTY: &str = "tried to pop from empty stack";
@@ -92,5 +99,79 @@ where
 
     fn evaluate_term(&self, _token: Token<'s>, term: T) -> Result<Self::Value, Self::Error> {
         Ok(term)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::{EvaluationContext, PureEvaluator};
+    use crate::{
+        expression::{Expression, ExpressionKind},
+        token::Token,
+        Span,
+    };
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum Error {
+        DivideByZero,
+    }
+
+    fn add(lhs: Term, rhs: Term) -> Result<Term, Error> {
+        Ok(lhs + rhs)
+    }
+
+    fn sub(lhs: Term, rhs: Term) -> Result<Term, Error> {
+        Ok(lhs - rhs)
+    }
+
+    fn mul(lhs: Term, rhs: Term) -> Result<Term, Error> {
+        Ok(lhs * rhs)
+    }
+
+    fn div(lhs: Term, rhs: Term) -> Result<Term, Error> {
+        if rhs == 0 {
+            Err(Error::DivideByZero)
+        } else {
+            Ok(lhs / rhs)
+        }
+    }
+
+    fn neg(argument: Term) -> Result<Term, Error> {
+        Ok(-argument)
+    }
+
+    type Term = i64;
+    type BinaryOperator = fn(Term, Term) -> Result<Term, Error>;
+    type UnaryOperator = fn(Term) -> Result<Term, Error>;
+
+    #[test_case([
+        ExpressionKind::Term(1), ExpressionKind::Term(1), ExpressionKind::BinaryOperator(add),
+    ], Ok(2); "basic")]
+    #[test_case([
+        ExpressionKind::Term(1), ExpressionKind::Term(1), ExpressionKind::BinaryOperator(add),
+        ExpressionKind::UnaryOperator(neg),
+        ExpressionKind::Term(3), ExpressionKind::BinaryOperator(mul),
+        ExpressionKind::Term(2), ExpressionKind::BinaryOperator(div),
+    ], Ok(-3); "basic 2")]
+    #[test_case([
+        ExpressionKind::Term(1), ExpressionKind::Term(1), ExpressionKind::BinaryOperator(add),
+        ExpressionKind::UnaryOperator(neg),
+        ExpressionKind::Term(3), ExpressionKind::BinaryOperator(mul),
+        ExpressionKind::Term(1), ExpressionKind::Term(1), ExpressionKind::BinaryOperator(sub),
+        ExpressionKind::BinaryOperator(div),
+    ], Err(Error::DivideByZero); "division by zero")]
+    fn evaluate_expression<const N: usize>(
+        expression: [ExpressionKind<BinaryOperator, UnaryOperator, Term>; N],
+        result: Result<Term, Error>,
+    ) {
+        const EMPTY_TOKEN: Token = Token::new(Span::new(0..0), "");
+        let actual = PureEvaluator.evaluate(expression.into_iter().map(|kind| Expression {
+            kind,
+            token: EMPTY_TOKEN,
+        }));
+
+        assert_eq!(actual, result);
     }
 }

@@ -14,6 +14,13 @@ pub struct Span {
 }
 
 impl Span {
+    pub const fn new(range: Range<usize>) -> Self {
+        Self {
+            start: range.start,
+            end: range.end,
+        }
+    }
+
     /// Creates a new span encompassing both input spans.
     pub fn join(self, other: Self) -> Self {
         Span {
@@ -35,10 +42,7 @@ impl From<Span> for Range<usize> {
 
 impl From<Range<usize>> for Span {
     fn from(range: Range<usize>) -> Self {
-        Span {
-            start: range.start,
-            end: range.end,
-        }
+        Self::new(range)
     }
 }
 
