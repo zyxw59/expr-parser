@@ -746,6 +746,10 @@ mod tests {
     #[test_case("[ 1 )", &[
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
     ] ; "mismatched delimiters" )]
+    #[test_case("( [ 1 )", &[
+        (ParseErrorKind::MismatchedDelimiter { opening: (2..3).into() }, 6..7),
+        (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
+    ] ; "mismatched delimiters 2" )]
     #[test_case("[ 1 + )", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 6..7),
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 6..7),
