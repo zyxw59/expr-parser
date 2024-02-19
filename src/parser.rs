@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::VecDeque};
+use std::{borrow::Cow, collections::VecDeque, ops::ControlFlow};
 
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
@@ -25,6 +25,9 @@ pub struct Parser<'s, I, T, C: ParseContext<'s, T>> {
     context: C,
     state: State,
     stack: ParserStack<'s, C, T>,
+    /// If the stack is empty, and a matching right delimiter is parsed, the parser will exit
+    /// early.
+    outer_delimiter: Option<C::Delimiter>,
     queue: ExpressionQueue<'s, C, T>,
 }
 
@@ -39,6 +42,22 @@ where
             context,
             state: State::PostOperator,
             stack: Stack::new(),
+            outer_delimiter: None,
+            queue: VecDeque::new(),
+        }
+    }
+
+    pub fn new_with_outer_delimiter(
+        tokenizer: I,
+        context: C,
+        outer_delimiter: C::Delimiter,
+    ) -> Self {
+        Parser {
+            tokenizer,
+            context,
+            state: State::PostOperator,
+            stack: Stack::new(),
+            outer_delimiter: Some(outer_delimiter),
             queue: VecDeque::new(),
         }
     }
@@ -48,8 +67,10 @@ where
         let mut end_of_input = 0;
         while let Some((token, kind)) = self.tokenizer.next() {
             end_of_input = token.span().end;
-            if let Err(err) = self.parse_next(token, kind) {
-                errors.push(err);
+            match self.parse_next(token, kind) {
+                Err(err) => errors.push(err),
+                Ok(ControlFlow::Continue(())) => continue,
+                Ok(ControlFlow::Break(())) => break,
             }
         }
         if self.state != State::PostTerm {
@@ -74,7 +95,7 @@ where
                     errors.push(ParseError {
                         kind: ParseErrorKind::UnmatchedLeftDelimiter,
                         span: el.token.span(),
-                    })
+                    });
                 }
             }
         }
@@ -89,8 +110,14 @@ where
                 errors.push(ParseError {
                     kind: ParseErrorKind::UnmatchedLeftDelimiter,
                     span: el.token.span(),
-                })
+                });
             }
+        }
+        if self.outer_delimiter.is_some() {
+            errors.push(ParseError {
+                kind: ParseErrorKind::UnmatchedLeftDelimiter,
+                span: Span::new(0..0),
+            });
         }
         if errors.is_empty() {
             Ok(self.queue)
@@ -99,7 +126,11 @@ where
         }
     }
 
-    fn parse_next(&mut self, token: Token<'s>, kind: T) -> Result<(), ParseError<C::Error>> {
+    fn parse_next(
+        &mut self,
+        token: Token<'s>,
+        kind: T,
+    ) -> Result<ControlFlow<()>, ParseError<C::Error>> {
         let element = self.context.parse_token(token, kind);
         match self.state {
             State::PostOperator => self.parse_term(token, element),
@@ -111,7 +142,7 @@ where
         &mut self,
         token: Token<'s>,
         element: ParserElement<'s, C, T>,
-    ) -> Result<(), ParseError<C::Error>> {
+    ) -> Result<ControlFlow<()>, ParseError<C::Error>> {
         match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
@@ -127,7 +158,7 @@ where
                 self.state = State::PostOperator;
             }
             Prefix::RightDelimiter { delimiter } => {
-                self.process_right_delimiter(token, delimiter)?;
+                return self.process_right_delimiter(token, delimiter);
             }
             Prefix::UnaryOperator {
                 precedence,
@@ -160,7 +191,7 @@ where
                             kind,
                             token: el.token,
                         });
-                        self.parse_operator(token, element)?;
+                        return self.parse_operator(token, element);
                     } else {
                         return Err(ParseError {
                             kind: ParseErrorKind::UnexpectedToken {
@@ -172,28 +203,32 @@ where
                 }
             }
         };
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     fn parse_operator(
         &mut self,
         token: Token<'s>,
         element: ParserElement<'s, C, T>,
-    ) -> Result<(), ParseError<C::Error>> {
+    ) -> Result<ControlFlow<()>, ParseError<C::Error>> {
         match element.postfix {
-            Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(token, delimiter),
+            Postfix::RightDelimiter { delimiter } => {
+                return self.process_right_delimiter(token, delimiter);
+            }
             Postfix::BinaryOperator {
                 fixity,
                 operator,
                 no_rhs,
             } => {
                 self.state = State::PostOperator;
-                self.process_binary_operator(token, fixity, operator, no_rhs)
+                self.process_binary_operator(token, fixity, operator, no_rhs)?;
             }
             Postfix::PostfixOperator {
                 precedence,
                 operator,
-            } => self.process_postfix_operator(token, precedence, operator),
+            } => {
+                self.process_postfix_operator(token, precedence, operator)?;
+            }
             Postfix::LeftDelimiter {
                 delimiter,
                 operator,
@@ -215,26 +250,26 @@ where
                         unary: empty,
                     },
                 });
-                Ok(())
             }
             Postfix::None => {
                 self.state = State::PostOperator;
                 // TODO(#11) here is where we would support implicit operators
-                Err(ParseError {
+                return Err(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
                         expected: EXPECT_OPERATOR,
                     },
                     span: token.span(),
-                })
+                });
             }
         }
+        Ok(ControlFlow::Continue(()))
     }
 
     fn process_right_delimiter(
         &mut self,
         token: Token<'s>,
         right: C::Delimiter,
-    ) -> Result<(), ParseError<C::Error>> {
+    ) -> Result<ControlFlow<()>, ParseError<C::Error>> {
         // If we don't have a right-hand operand, demote the operator on the top of the stack
         // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
         // requires a right-hand operand), then construct an error. We don't early return with this
@@ -264,7 +299,8 @@ where
                         el.token,
                         right,
                         token,
-                    );
+                    )
+                    .map(ControlFlow::Continue);
                 }
                 no_rhs_result
             } else {
@@ -282,7 +318,14 @@ where
                 });
             }
             if let Some(left) = el.delimiter {
-                return Self::check_delimiter_match(no_rhs_result, left, el.token, right, token);
+                return Self::check_delimiter_match(no_rhs_result, left, el.token, right, token)
+                    .map(ControlFlow::Continue);
+            }
+        }
+        if let Some(left) = &self.outer_delimiter {
+            if left.matches(&right) {
+                self.outer_delimiter.take();
+                return no_rhs_result.map(ControlFlow::Break);
             }
         }
         Err(ParseError {
@@ -797,5 +840,21 @@ mod tests {
             .map(|err| (err.kind, err.span.into_range()))
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
+    }
+
+    #[test_case("4 * 5 + 3) - 1", "4 5 * 3 +" ; "outer delimiter" )]
+    fn parse_expression_outer_delimiter(input: &str, output: &str) -> anyhow::Result<()> {
+        let actual = Parser::new_with_outer_delimiter(
+            SimpleTokenizer::new(input),
+            SimpleExprContext,
+            SimpleDelimiter::Paren,
+        )
+        .parse()?
+        .into_iter()
+        .map(expr_to_str)
+        .collect::<Vec<_>>();
+        let expected = output.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        Ok(())
     }
 }
