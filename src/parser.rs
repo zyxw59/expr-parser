@@ -155,7 +155,6 @@ where
                             kind,
                             token: el.token,
                         });
-                        self.parse_operator(token, element);
                     } else {
                         self.errors.push(ParseError {
                             kind: ParseErrorKind::UnexpectedToken {
@@ -165,6 +164,7 @@ where
                         });
                     };
                 }
+                self.parse_operator(token, element);
             }
         }
     }
@@ -752,7 +752,6 @@ mod tests {
     ] ; "mismatched delimiters with missing rhs" )]
     #[test_case("1 + * 2", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 4..5),
-        (ParseErrorKind::UnexpectedToken { expected: EXPECT_OPERATOR }, 6..7),
     ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
