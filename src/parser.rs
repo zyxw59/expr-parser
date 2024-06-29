@@ -241,9 +241,7 @@ where
                 };
                 if let Some(left) = el.delimiter {
                     self.state = State::PostTerm;
-                    if let Err(err) = Self::check_delimiter_match(left, el.token, right, token) {
-                        self.errors.push(err);
-                    }
+                    self.check_delimiter_match(left, el.token, right, token);
                     return;
                 }
             }
@@ -257,9 +255,7 @@ where
                 });
             }
             if let Some(left) = el.delimiter {
-                if let Err(err) = Self::check_delimiter_match(left, el.token, right, token) {
-                    self.errors.push(err);
-                }
+                self.check_delimiter_match(left, el.token, right, token);
                 return;
             }
         }
@@ -270,20 +266,19 @@ where
     }
 
     fn check_delimiter_match(
+        &mut self,
         left: C::Delimiter,
         left_token: Token<'s>,
         right: C::Delimiter,
         right_token: Token<'s>,
-    ) -> Result<(), ParseError<C::Error>> {
-        if left.matches(&right) {
-            Ok(())
-        } else {
-            Err(ParseError {
+    ) {
+        if !left.matches(&right) {
+            self.errors.push(ParseError {
                 kind: ParseErrorKind::MismatchedDelimiter {
                     opening: left_token.span(),
                 },
                 span: right_token.span(),
-            })
+            });
         }
     }
 
