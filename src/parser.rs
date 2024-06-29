@@ -106,10 +106,24 @@ where
     }
 
     fn parse_next(&mut self, token: Token<T>) {
-        let element = self.context.parse_token(token.kind);
+        match self.context.parse_token(token.kind) {
+            Ok(element) =>
         match self.state {
             State::PostOperator => self.parse_term(token.span, element),
             State::PostTerm => self.parse_operator(token.span, element),
+        }
+            Err(error) => {
+                self.errors.push(ParseError {
+                    span: token.span,
+                    kind: ParseErrorKind::Other(error),
+                });
+                // assume that the invalid token was the more expected kind, ideally producing the
+                // most useful errors.
+                match self.state {
+                    State::PostOperator => self.state = State::PostTerm,
+                    State::PostTerm => self.state = State::PostOperator,
+                }
+            }
         }
     }
 
@@ -338,7 +352,7 @@ pub trait Parser<T> {
     type Term;
     type Error;
 
-    fn parse_token(&self, kind: T) -> ParserElement<Self, T>;
+    fn parse_token(&self, kind: T) -> Result<ParserElement<Self, T>, Self::Error>;
 }
 
 pub trait Delimiter {
@@ -584,14 +598,14 @@ mod tests {
         fn parse_token(
             &self,
             (s, _kind): (&'s str, SimpleCharSetTokenKind),
-        ) -> Element<
+        ) -> Result<Element<
             Self::Precedence,
             Self::Delimiter,
             Self::BinaryOperator,
             Self::UnaryOperator,
             Self::Term,
-        > {
-            match s {
+        >, Self::Error> {
+            Ok(match s {
                 "(" => Element {
                     prefix: Prefix::LeftDelimiter {
                         delimiter: SimpleDelimiter::Paren,
@@ -693,7 +707,7 @@ mod tests {
                     prefix: Prefix::Term { term: s },
                     postfix: Postfix::None,
                 },
-            }
+            })
         }
     }
 
