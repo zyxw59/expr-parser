@@ -11,41 +11,41 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<'s, I, T, C>(
+pub fn parse<'s, I, T, P>(
     tokens: I,
-    context: C,
-) -> Result<ExpressionQueue<'s, C, T>, ParseErrors<C::Error>>
+    context: P,
+) -> Result<ExpressionQueue<'s, P, T>, ParseErrors<P::Error>>
 where
-    C: ParseContext<'s, T>,
+    P: Parser<'s, T>,
     I: Iterator<Item = (Token<'s>, T)>,
 {
     ParseHelper::new(tokens, context).parse()
 }
 
-pub type ExpressionQueue<'s, C, T> = VecDeque<
+pub type ExpressionQueue<'s, P, T> = VecDeque<
     Expression<
         's,
-        <C as ParseContext<'s, T>>::BinaryOperator,
-        <C as ParseContext<'s, T>>::UnaryOperator,
-        <C as ParseContext<'s, T>>::Term,
+        <P as Parser<'s, T>>::BinaryOperator,
+        <P as Parser<'s, T>>::UnaryOperator,
+        <P as Parser<'s, T>>::Term,
     >,
 >;
 
-struct ParseHelper<'s, I, T, C: ParseContext<'s, T>> {
+struct ParseHelper<'s, I, T, P: Parser<'s, T>> {
     tokenizer: I,
-    context: C,
+    context: P,
     state: State,
-    stack: ParserStack<'s, C, T>,
-    queue: ExpressionQueue<'s, C, T>,
-    errors: Vec<ParseError<C::Error>>,
+    stack: ParserStack<'s, P, T>,
+    queue: ExpressionQueue<'s, P, T>,
+    errors: Vec<ParseError<P::Error>>,
 }
 
-impl<'s, I, T, C> ParseHelper<'s, I, T, C>
+impl<'s, I, T, P> ParseHelper<'s, I, T, P>
 where
-    C: ParseContext<'s, T>,
+    P: Parser<'s, T>,
     I: Iterator<Item = (Token<'s>, T)>,
 {
-    pub fn new(tokenizer: I, context: C) -> Self {
+    fn new(tokenizer: I, context: P) -> Self {
         Self {
             tokenizer,
             context,
@@ -56,7 +56,7 @@ where
         }
     }
 
-    pub fn parse(mut self) -> Result<ExpressionQueue<'s, C, T>, ParseErrors<C::Error>> {
+    fn parse(mut self) -> Result<ExpressionQueue<'s, P, T>, ParseErrors<P::Error>> {
         let mut end_of_input = 0;
         while let Some((token, kind)) = self.tokenizer.next() {
             end_of_input = token.span().end;
@@ -117,7 +117,7 @@ where
         }
     }
 
-    fn parse_term(&mut self, token: Token<'s>, element: ParserElement<'s, C, T>) {
+    fn parse_term(&mut self, token: Token<'s>, element: ParserElement<'s, P, T>) {
         match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
@@ -180,7 +180,7 @@ where
         }
     }
 
-    fn parse_operator(&mut self, token: Token<'s>, element: ParserElement<'s, C, T>) {
+    fn parse_operator(&mut self, token: Token<'s>, element: ParserElement<'s, P, T>) {
         match element.postfix {
             Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(token, delimiter),
             Postfix::BinaryOperator {
@@ -230,7 +230,7 @@ where
         }
     }
 
-    fn process_right_delimiter(&mut self, token: Token<'s>, right: C::Delimiter) {
+    fn process_right_delimiter(&mut self, token: Token<'s>, right: P::Delimiter) {
         // If we don't have a right-hand operand, demote the operator on the top of the stack
         // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
         // requires a right-hand operand), then push an error. We don't early return though, since
@@ -278,9 +278,9 @@ where
 
     fn check_delimiter_match(
         &mut self,
-        left: C::Delimiter,
+        left: P::Delimiter,
         left_token: Token<'s>,
-        right: C::Delimiter,
+        right: P::Delimiter,
         right_token: Token<'s>,
     ) {
         if !left.matches(&right) {
@@ -296,9 +296,9 @@ where
     fn process_binary_operator(
         &mut self,
         token: Token<'s>,
-        fixity: Fixity<C::Precedence>,
-        binary: C::BinaryOperator,
-        unary: Option<C::UnaryOperator>,
+        fixity: Fixity<P::Precedence>,
+        binary: P::BinaryOperator,
+        unary: Option<P::UnaryOperator>,
     ) {
         self.pop_while_lower_precedence(&fixity);
         self.stack.push(StackElement {
@@ -312,8 +312,8 @@ where
     fn process_postfix_operator(
         &mut self,
         token: Token<'s>,
-        precedence: C::Precedence,
-        operator: C::UnaryOperator,
+        precedence: P::Precedence,
+        operator: P::UnaryOperator,
     ) {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
@@ -324,7 +324,7 @@ where
         });
     }
 
-    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<C::Precedence>) {
+    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
                 self.queue.push_back(Expression {
@@ -336,7 +336,7 @@ where
     }
 }
 
-pub trait ParseContext<'s, T> {
+pub trait Parser<'s, T> {
     type Precedence: Ord;
     type Delimiter: Delimiter;
     type BinaryOperator;
@@ -356,12 +356,12 @@ pub struct Element<P, D, B, U, T> {
     pub postfix: Postfix<P, D, B, U>,
 }
 
-pub type ParserElement<'s, C, T> = Element<
-    <C as ParseContext<'s, T>>::Precedence,
-    <C as ParseContext<'s, T>>::Delimiter,
-    <C as ParseContext<'s, T>>::BinaryOperator,
-    <C as ParseContext<'s, T>>::UnaryOperator,
-    <C as ParseContext<'s, T>>::Term,
+pub type ParserElement<'s, P, T> = Element<
+    <P as Parser<'s, T>>::Precedence,
+    <P as Parser<'s, T>>::Delimiter,
+    <P as Parser<'s, T>>::BinaryOperator,
+    <P as Parser<'s, T>>::UnaryOperator,
+    <P as Parser<'s, T>>::Term,
 >;
 
 pub enum Prefix<P, D, U, T> {
@@ -414,13 +414,13 @@ enum State {
 #[derive(Clone, Debug)]
 struct Stack<'s, P, D, B, U, T>(Vec<StackElement<'s, P, D, B, U, T>>);
 
-type ParserStack<'s, C, T> = Stack<
+type ParserStack<'s, P, T> = Stack<
     's,
-    <C as ParseContext<'s, T>>::Precedence,
-    <C as ParseContext<'s, T>>::Delimiter,
-    <C as ParseContext<'s, T>>::BinaryOperator,
-    <C as ParseContext<'s, T>>::UnaryOperator,
-    <C as ParseContext<'s, T>>::Term,
+    <P as Parser<'s, T>>::Precedence,
+    <P as Parser<'s, T>>::Delimiter,
+    <P as Parser<'s, T>>::BinaryOperator,
+    <P as Parser<'s, T>>::UnaryOperator,
+    <P as Parser<'s, T>>::Term,
 >;
 
 impl<'s, P, D, B, U, T> Default for Stack<'s, P, D, B, U, T> {
@@ -545,9 +545,7 @@ mod tests {
 
     use test_case::test_case;
 
-    use super::{
-        parse, Delimiter, Element, ParseContext, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM,
-    };
+    use super::{parse, Delimiter, Element, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM};
     use crate::{
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
@@ -585,7 +583,7 @@ mod tests {
         }
     }
 
-    impl<'s> ParseContext<'s, SimpleCharSetTokenKind> for SimpleExprContext {
+    impl<'s> Parser<'s, SimpleCharSetTokenKind> for SimpleExprContext {
         type Error = SimpleParserError;
         type Precedence = SimplePrecedence;
         type Delimiter = SimpleDelimiter;
