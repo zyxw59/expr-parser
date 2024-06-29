@@ -11,6 +11,17 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
+pub fn parse<'s, I, T, C>(
+    tokens: I,
+    context: C,
+) -> Result<ExpressionQueue<'s, C, T>, ParseErrors<C::Error>>
+where
+    C: ParseContext<'s, T>,
+    I: Iterator<Item = (Token<'s>, T)>,
+{
+    ParseHelper::new(tokens, context).parse()
+}
+
 pub type ExpressionQueue<'s, C, T> = VecDeque<
     Expression<
         's,
@@ -20,7 +31,7 @@ pub type ExpressionQueue<'s, C, T> = VecDeque<
     >,
 >;
 
-pub struct Parser<'s, I, T, C: ParseContext<'s, T>> {
+struct ParseHelper<'s, I, T, C: ParseContext<'s, T>> {
     tokenizer: I,
     context: C,
     state: State,
@@ -29,13 +40,13 @@ pub struct Parser<'s, I, T, C: ParseContext<'s, T>> {
     errors: Vec<ParseError<C::Error>>,
 }
 
-impl<'s, I, T, C> Parser<'s, I, T, C>
+impl<'s, I, T, C> ParseHelper<'s, I, T, C>
 where
     C: ParseContext<'s, T>,
     I: Iterator<Item = (Token<'s>, T)>,
 {
     pub fn new(tokenizer: I, context: C) -> Self {
-        Parser {
+        Self {
             tokenizer,
             context,
             state: State::PostOperator,
@@ -535,7 +546,7 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        Delimiter, Element, ParseContext, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM,
+        parse, Delimiter, Element, ParseContext, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM,
     };
     use crate::{
         error::ParseErrorKind,
@@ -721,8 +732,7 @@ mod tests {
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
-            .parse()?
+        let actual = parse(SimpleTokenizer::new(input), SimpleExprContext)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
@@ -756,8 +766,7 @@ mod tests {
         input: &str,
         expected: &[(ParseErrorKind<SimpleParserError>, Range<usize>)],
     ) {
-        let actual = Parser::new(SimpleTokenizer::new(input), SimpleExprContext)
-            .parse()
+        let actual = parse(SimpleTokenizer::new(input), SimpleExprContext)
             .unwrap_err()
             .errors
             .into_iter()
