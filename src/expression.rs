@@ -1,9 +1,9 @@
-use crate::token::Token;
+use crate::Span;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Expression<'s, B, U, T> {
+pub struct Expression<B, U, T> {
     pub kind: ExpressionKind<B, U, T>,
-    pub token: Token<'s>,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug)]
