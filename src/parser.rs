@@ -107,11 +107,10 @@ where
 
     fn parse_next(&mut self, token: Token<T>) {
         match self.context.parse_token(token.kind) {
-            Ok(element) =>
-        match self.state {
-            State::PostOperator => self.parse_term(token.span, element),
-            State::PostTerm => self.parse_operator(token.span, element),
-        }
+            Ok(element) => match self.state {
+                State::PostOperator => self.parse_term(token.span, element),
+                State::PostTerm => self.parse_operator(token.span, element),
+            },
             Err(error) => {
                 self.errors.push(ParseError {
                     span: token.span,
@@ -598,13 +597,16 @@ mod tests {
         fn parse_token(
             &self,
             (s, _kind): (&'s str, SimpleCharSetTokenKind),
-        ) -> Result<Element<
-            Self::Precedence,
-            Self::Delimiter,
-            Self::BinaryOperator,
-            Self::UnaryOperator,
-            Self::Term,
-        >, Self::Error> {
+        ) -> Result<
+            Element<
+                Self::Precedence,
+                Self::Delimiter,
+                Self::BinaryOperator,
+                Self::UnaryOperator,
+                Self::Term,
+            >,
+            Self::Error,
+        > {
             Ok(match s {
                 "(" => Element {
                     prefix: Prefix::LeftDelimiter {
