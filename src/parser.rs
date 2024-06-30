@@ -16,7 +16,18 @@ where
     P: Parser<T>,
     I: Iterator<Item = Token<T>>,
 {
-    ParseHelper::new(tokens, parser).parse()
+    ParseHelper::new(tokens, parser).parse_all()
+}
+
+pub fn parse_one_term<I, T, P>(
+    tokens: I,
+    parser: P,
+) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>>
+where
+    P: Parser<T>,
+    I: Iterator<Item = Token<T>>,
+{
+    ParseHelper::new(tokens, parser).parse_one_term()
 }
 
 pub type ExpressionQueue<P, T> = VecDeque<
@@ -52,12 +63,36 @@ where
         }
     }
 
-    fn parse(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+    /// Parses until the end of input
+    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
         let mut end_of_input = 0;
         while let Some(token) = self.tokenizer.next() {
             end_of_input = token.span.end;
             self.parse_next(token);
         }
+        self.finish_parsing(end_of_input)
+    }
+
+    /// Parses until a single term has been completed.
+    ///
+    /// This means zero or more prefix operators followed by either a term token or a delimited
+    /// group.
+    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+        let mut end_of_input = 0;
+        while let Some(token) = self.tokenizer.next() {
+            end_of_input = token.span.end;
+            self.parse_next(token);
+            if self.stack.is_empty() {
+                break;
+            }
+        }
+        self.finish_parsing(end_of_input)
+    }
+
+    fn finish_parsing(
+        mut self,
+        end_of_input: usize,
+    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
@@ -446,6 +481,10 @@ impl<P, D, B, U, T> Stack<P, D, B, U, T> {
 
     fn pop(&mut self) -> Option<StackElement<P, D, B, U, T>> {
         self.0.pop()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
