@@ -11,12 +11,12 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<I, T, P>(tokens: I, context: P) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>>
+pub fn parse<I, T, P>(tokens: I, parser: P) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>>
 where
     P: Parser<T>,
     I: Iterator<Item = Token<T>>,
 {
-    ParseHelper::new(tokens, context).parse()
+    ParseHelper::new(tokens, parser).parse()
 }
 
 pub type ExpressionQueue<P, T> = VecDeque<
@@ -29,7 +29,7 @@ pub type ExpressionQueue<P, T> = VecDeque<
 
 struct ParseHelper<I, T, P: Parser<T>> {
     tokenizer: I,
-    context: P,
+    parser: P,
     state: State,
     stack: ParserStack<P, T>,
     queue: ExpressionQueue<P, T>,
@@ -41,10 +41,10 @@ where
     P: Parser<T>,
     I: Iterator<Item = Token<T>>,
 {
-    fn new(tokenizer: I, context: P) -> Self {
+    fn new(tokenizer: I, parser: P) -> Self {
         Self {
             tokenizer,
-            context,
+            parser,
             state: State::PostOperator,
             stack: Stack::new(),
             queue: VecDeque::new(),
@@ -106,7 +106,7 @@ where
     }
 
     fn parse_next(&mut self, token: Token<T>) {
-        match self.context.parse_token(token.kind) {
+        match self.parser.parse_token(token.kind) {
             Ok(element) => match self.state {
                 State::PostOperator => self.parse_term(token.span, element),
                 State::PostTerm => self.parse_operator(token.span, element),
