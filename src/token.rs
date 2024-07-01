@@ -82,7 +82,7 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
 }
 
 impl<'s, C: CharSet> Iterator for CharSetTokenizer<'s, C> {
-    type Item = (Token<'s>, C::TokenKind);
+    type Item = Token<(&'s str, C::TokenKind)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -91,13 +91,10 @@ impl<'s, C: CharSet> Iterator for CharSetTokenizer<'s, C> {
             let state = C::categorize(ch);
             if let Some(kind) = self.advance_while(state) {
                 let end = self.next_index();
-                return Some((
-                    Token {
-                        span: Span { start, end },
-                        source: self.source,
-                    },
-                    kind,
-                ));
+                return Some(Token {
+                    span: Span { start, end },
+                    kind: (&self.source[start..end], kind),
+                });
             }
         }
     }
@@ -238,32 +235,14 @@ impl NumberState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Token<'s> {
-    span: Span,
-    source: &'s str,
+pub struct Token<T> {
+    pub span: Span,
+    pub kind: T,
 }
 
-impl<'s> Token<'s> {
-    pub const fn new(span: Span, source: &'s str) -> Self {
-        Token { span, source }
-    }
-
-    pub const fn span(&self) -> Span {
-        self.span
-    }
-
-    pub const fn source(&self) -> &'s str {
-        self.source
-    }
-
-    pub fn as_str(&self) -> &'s str {
-        &self.source[self.span.into_range()]
-    }
-}
-
-impl<'s> fmt::Display for Token<'s> {
+impl<T: fmt::Display> fmt::Display for Token<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(self.as_str(), f)
+        fmt::Display::fmt(&self.kind, f)
     }
 }
 
@@ -342,6 +321,6 @@ mod tests {
     #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
         let actual = SimpleTokenizer::new(source).next().unwrap();
-        assert_eq!((actual.0.as_str(), actual.1), (as_str, kind));
+        assert_eq!(actual.kind, (as_str, kind));
     }
 }

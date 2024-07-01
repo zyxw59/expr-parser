@@ -1,15 +1,15 @@
 use crate::{
     expression::{Expression, ExpressionKind},
-    token::Token,
+    Span,
 };
 
-pub trait EvaluationContext<'s, B, U, T> {
+pub trait Evaluator<B, U, T> {
     type Value;
     type Error;
 
     fn evaluate_binary_operator(
         &self,
-        token: Token<'s>,
+        span: Span,
         operator: B,
         lhs: Self::Value,
         rhs: Self::Value,
@@ -17,31 +17,31 @@ pub trait EvaluationContext<'s, B, U, T> {
 
     fn evaluate_unary_operator(
         &self,
-        token: Token<'s>,
+        span: Span,
         operator: U,
         argument: Self::Value,
     ) -> Result<Self::Value, Self::Error>;
 
-    fn evaluate_term(&self, token: Token<'s>, term: T) -> Result<Self::Value, Self::Error>;
+    fn evaluate_term(&self, span: Span, term: T) -> Result<Self::Value, Self::Error>;
 
     fn evaluate<I>(&self, input: I) -> Result<Self::Value, Self::Error>
     where
-        I: IntoIterator<Item = Expression<'s, B, U, T>>,
+        I: IntoIterator<Item = Expression<B, U, T>>,
     {
         evaluate(self, input)
     }
 }
 
-/// Evaluate the input expression queue using the provided `EvaluationContext`.
+/// Evaluate the input expression queue using the provided `Evaluator`.
 ///
 /// # Panics
 ///
 /// This function will panic if it encounters an operator and the stack does not contain enough
 /// values for the operator's arguments. It will also panic if the input is empty.
-pub fn evaluate<'s, C, I, B, U, T>(context: &C, input: I) -> Result<C::Value, C::Error>
+pub fn evaluate<E, I, B, U, T>(evaluator: &E, input: I) -> Result<E::Value, E::Error>
 where
-    C: EvaluationContext<'s, B, U, T> + ?Sized,
-    I: IntoIterator<Item = Expression<'s, B, U, T>>,
+    E: Evaluator<B, U, T> + ?Sized,
+    I: IntoIterator<Item = Expression<B, U, T>>,
 {
     const STACK_EMPTY: &str = "tried to pop from empty stack";
 
@@ -51,14 +51,14 @@ where
             ExpressionKind::BinaryOperator(op) => {
                 let rhs = stack.pop().expect(STACK_EMPTY);
                 let lhs = stack.pop().expect(STACK_EMPTY);
-                stack.push(context.evaluate_binary_operator(expr.token, op, lhs, rhs)?);
+                stack.push(evaluator.evaluate_binary_operator(expr.span, op, lhs, rhs)?);
             }
             ExpressionKind::UnaryOperator(op) => {
                 let argument = stack.pop().expect(STACK_EMPTY);
-                stack.push(context.evaluate_unary_operator(expr.token, op, argument)?);
+                stack.push(evaluator.evaluate_unary_operator(expr.span, op, argument)?);
             }
             ExpressionKind::Term(term) => {
-                stack.push(context.evaluate_term(expr.token, term)?);
+                stack.push(evaluator.evaluate_term(expr.span, term)?);
             }
         }
     }
@@ -66,11 +66,11 @@ where
     Ok(stack.pop().expect(STACK_EMPTY))
 }
 
-/// An `EvaluationContext` whose `Value` type is the same as its `Term` type, and whose operators
+/// An `Evaluator` whose `Value` type is the same as its `Term` type, and whose operators
 /// are pure functions on that type that return `Result<Term, E>`
 pub struct PureEvaluator;
 
-impl<'s, B, U, T, E> EvaluationContext<'s, B, U, T> for PureEvaluator
+impl<B, U, T, E> Evaluator<B, U, T> for PureEvaluator
 where
     B: FnOnce(T, T) -> Result<T, E>,
     U: FnOnce(T) -> Result<T, E>,
@@ -80,7 +80,7 @@ where
 
     fn evaluate_binary_operator(
         &self,
-        _token: Token<'s>,
+        _span: Span,
         operator: B,
         lhs: Self::Value,
         rhs: Self::Value,
@@ -90,14 +90,14 @@ where
 
     fn evaluate_unary_operator(
         &self,
-        _token: Token<'s>,
+        _span: Span,
         operator: U,
         argument: Self::Value,
     ) -> Result<Self::Value, Self::Error> {
         operator(argument)
     }
 
-    fn evaluate_term(&self, _token: Token<'s>, term: T) -> Result<Self::Value, Self::Error> {
+    fn evaluate_term(&self, _span: Span, term: T) -> Result<Self::Value, Self::Error> {
         Ok(term)
     }
 }
@@ -106,10 +106,9 @@ where
 mod tests {
     use test_case::test_case;
 
-    use super::{EvaluationContext, PureEvaluator};
+    use super::{Evaluator, PureEvaluator};
     use crate::{
         expression::{Expression, ExpressionKind},
-        token::Token,
         Span,
     };
 
@@ -166,10 +165,10 @@ mod tests {
         expression: [ExpressionKind<BinaryOperator, UnaryOperator, Term>; N],
         result: Result<Term, Error>,
     ) {
-        const EMPTY_TOKEN: Token = Token::new(Span::new(0..0), "");
+        const EMPTY_SPAN: Span = Span::new(0..0);
         let actual = PureEvaluator.evaluate(expression.into_iter().map(|kind| Expression {
             kind,
-            token: EMPTY_TOKEN,
+            span: EMPTY_SPAN,
         }));
 
         assert_eq!(actual, result);
