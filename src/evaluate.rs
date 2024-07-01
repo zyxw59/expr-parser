@@ -3,7 +3,7 @@ use crate::{
     Span,
 };
 
-pub trait EvaluationContext<B, U, T> {
+pub trait Evaluator<B, U, T> {
     type Value;
     type Error;
 
@@ -32,15 +32,15 @@ pub trait EvaluationContext<B, U, T> {
     }
 }
 
-/// Evaluate the input expression queue using the provided `EvaluationContext`.
+/// Evaluate the input expression queue using the provided `Evaluator`.
 ///
 /// # Panics
 ///
 /// This function will panic if it encounters an operator and the stack does not contain enough
 /// values for the operator's arguments. It will also panic if the input is empty.
-pub fn evaluate<C, I, B, U, T>(context: &C, input: I) -> Result<C::Value, C::Error>
+pub fn evaluate<E, I, B, U, T>(evaluator: &E, input: I) -> Result<E::Value, E::Error>
 where
-    C: EvaluationContext<B, U, T> + ?Sized,
+    E: Evaluator<B, U, T> + ?Sized,
     I: IntoIterator<Item = Expression<B, U, T>>,
 {
     const STACK_EMPTY: &str = "tried to pop from empty stack";
@@ -51,14 +51,14 @@ where
             ExpressionKind::BinaryOperator(op) => {
                 let rhs = stack.pop().expect(STACK_EMPTY);
                 let lhs = stack.pop().expect(STACK_EMPTY);
-                stack.push(context.evaluate_binary_operator(expr.span, op, lhs, rhs)?);
+                stack.push(evaluator.evaluate_binary_operator(expr.span, op, lhs, rhs)?);
             }
             ExpressionKind::UnaryOperator(op) => {
                 let argument = stack.pop().expect(STACK_EMPTY);
-                stack.push(context.evaluate_unary_operator(expr.span, op, argument)?);
+                stack.push(evaluator.evaluate_unary_operator(expr.span, op, argument)?);
             }
             ExpressionKind::Term(term) => {
-                stack.push(context.evaluate_term(expr.span, term)?);
+                stack.push(evaluator.evaluate_term(expr.span, term)?);
             }
         }
     }
@@ -66,11 +66,11 @@ where
     Ok(stack.pop().expect(STACK_EMPTY))
 }
 
-/// An `EvaluationContext` whose `Value` type is the same as its `Term` type, and whose operators
+/// An `Evaluator` whose `Value` type is the same as its `Term` type, and whose operators
 /// are pure functions on that type that return `Result<Term, E>`
 pub struct PureEvaluator;
 
-impl<B, U, T, E> EvaluationContext<B, U, T> for PureEvaluator
+impl<B, U, T, E> Evaluator<B, U, T> for PureEvaluator
 where
     B: FnOnce(T, T) -> Result<T, E>,
     U: FnOnce(T) -> Result<T, E>,
@@ -106,7 +106,7 @@ where
 mod tests {
     use test_case::test_case;
 
-    use super::{EvaluationContext, PureEvaluator};
+    use super::{Evaluator, PureEvaluator};
     use crate::{
         expression::{Expression, ExpressionKind},
         Span,
