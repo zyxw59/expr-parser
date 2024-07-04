@@ -1,5 +1,11 @@
-use std::{fmt, marker::PhantomData, ops::ControlFlow, convert::Infallible};
+use std::{
+    convert::Infallible,
+    fmt,
+    io::{self, BufRead},
+    marker::PhantomData,
+};
 
+use itertools::Either;
 use unicode_xid::UnicodeXID;
 
 use crate::Span;
@@ -20,61 +26,58 @@ impl<T: Tokenizer> Tokenizer for &mut T {
     }
 }
 
-/// A tokenizer which tokenizes characters by grouping them into sets.
-pub struct CharSetTokenizer<'s, C> {
+pub trait Source {
+    type Char;
+    type String;
+    type Error;
+
+    /// Returns the start index of the next character.
+    fn next_index(&self) -> usize;
+
+    fn is_empty(&self) -> bool;
+
+    /// Advances in the input as long as the character matches the predicate, returning the
+    /// matching string.
+    fn advance_while(
+        &mut self,
+        predicate: impl FnMut(Self::Char) -> bool,
+    ) -> Result<Self::String, Self::Error>;
+}
+
+pub struct StrSource<'s> {
     /// The full source string
     source: &'s str,
     /// The remainder of the input which has not been tokenized yet
     remainder: &'s str,
-    _marker: PhantomData<fn() -> C>,
 }
 
-pub trait CharSet {
-    type TokenKind;
-
-    /// Categorize a character at the start of a potential token.
-    fn categorize(c: char) -> Self;
-
-    /// Categorize a charcter while continuing a potential token.
-    ///
-    /// # Return value
-    /// - `Continue`: accepts the character as part of this potential token.
-    /// - `Break(Some(_))`: rejects the character and produces a token with the specified
-    ///   `TokenKind`.
-    /// - `Break(None)`: rejects the character and does not produce a token.
-    fn next_char(&mut self, c: char) -> ControlFlow<Option<Self::TokenKind>>;
-
-    /// What token kind (if any) to return if end of input is reached.
-    fn end_of_input(self) -> Option<Self::TokenKind>;
-}
-
-impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
+impl<'s> StrSource<'s> {
     pub fn new(source: &'s str) -> Self {
         Self {
             source,
             remainder: source,
-            _marker: PhantomData,
         }
     }
+}
 
-    /// Advance to the next input character.
-    fn next_char(&mut self) -> Option<char> {
-        let mut it = self.remainder.chars();
-        let val = it.next();
-        self.remainder = it.as_str();
-        val
+impl<'s> Source for StrSource<'s> {
+    type Char = char;
+    type String = &'s str;
+    type Error = Infallible;
+
+    fn next_index(&self) -> usize {
+        self.source.len() - self.remainder.len()
     }
 
-    /// Advances in the input as long as the character matches the character set.
-    fn advance_while(&mut self, mut state: C) -> Option<C::TokenKind> {
-        let mut kind = None;
-        let mut predicate = |c| match state.next_char(c) {
-            ControlFlow::Continue(()) => true,
-            ControlFlow::Break(new_kind) => {
-                kind = new_kind;
-                false
-            }
-        };
+    fn is_empty(&self) -> bool {
+        self.remainder.is_empty()
+    }
+
+    fn advance_while(
+        &mut self,
+        mut predicate: impl FnMut(char) -> bool,
+    ) -> Result<&'s str, Infallible> {
+        let start = self.next_index();
         let offset = self
             .remainder
             .char_indices()
@@ -83,52 +86,167 @@ impl<'s, C: CharSet> CharSetTokenizer<'s, C> {
             .next()
             .unwrap_or(self.remainder.len());
         self.remainder = &self.remainder[offset..];
-        if self.remainder.is_empty() {
-            state.end_of_input()
-        } else {
-            kind
-        }
-    }
-
-    /// Returns the byte position of the next character, or the length of the underlying string if
-    /// there are no more characters.
-    fn next_index(&self) -> usize {
-        self.source.len() - self.remainder.len()
+        Ok(&self.source[start..start + offset])
     }
 }
 
-impl<'s, C: CharSet> Iterator for CharSetTokenizer<'s, C> {
-    type Item = Token<(&'s str, C::TokenKind)>;
+pub struct BufReadSource<R> {
+    reader: R,
+    buffer: String,
+    index: usize,
+    is_empty: bool,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
+impl<R: BufRead> BufReadSource<R> {
+    fn flil_buf(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            self.is_empty = self.reader.read_line(&mut self.buffer)? == 0;
+        }
+        Ok(())
+    }
+}
+
+impl<R: BufRead> Source for BufReadSource<R> {
+    type Char = char;
+    type String = String;
+    type Error = io::Error;
+
+    fn next_index(&self) -> usize {
+        self.index
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty
+    }
+
+    fn advance_while(
+        &mut self,
+        mut predicate: impl FnMut(char) -> bool,
+    ) -> Result<String, io::Error> {
+        let mut token = String::new();
+        while !self.is_empty {
+            self.flil_buf()?;
+            let buffer = &self.buffer;
+            let offset = buffer
+                .char_indices()
+                .skip_while(|(_, c)| predicate(*c))
+                .map(|(idx, _)| idx)
+                .next()
+                .unwrap_or(buffer.len());
+            self.index += offset;
+            let mut s = self.buffer.split_off(offset);
+            std::mem::swap(&mut s, &mut self.buffer);
+            if token.is_empty() {
+                token = s;
+            } else {
+                token.push_str(&s);
+            }
+            if !self.buffer.is_empty() {
+                break;
+            }
+        }
+        Ok(token)
+    }
+}
+
+/// A tokenizer which tokenizes characters by grouping them into sets.
+pub struct CharSetTokenizer<S, C> {
+    source: S,
+    _marker: PhantomData<fn() -> C>,
+}
+
+pub enum CharSetResult<T, E> {
+    /// Accept the character in the token
+    Continue,
+    /// Reject the character and optionally produce a token
+    Done(Option<T>),
+    /// Reject the character and discard the current token, returning an error
+    Err(E),
+}
+
+pub trait CharSet<C>: Default {
+    type TokenKind;
+    type Error;
+
+    /// Categorize a charcter while continuing a potential token.
+    fn next_char(&mut self, c: C) -> CharSetResult<Self::TokenKind, Self::Error>;
+
+    /// What token kind (if any) to return if end of input is reached.
+    fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error>;
+}
+
+impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
+    pub fn new(source: S) -> Self {
+        Self {
+            source,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Advances in the input as long as the character matches the character set.
+    fn advance_while(
+        &mut self,
+    ) -> Result<Option<(S::String, C::TokenKind)>, Either<S::Error, C::Error>> {
+        let mut result = Ok(None);
+        let mut state = C::default();
+        let predicate = |c| match state.next_char(c) {
+            CharSetResult::Continue => true,
+            CharSetResult::Done(new_kind) => {
+                result = Ok(new_kind);
+                false
+            }
+            CharSetResult::Err(err) => {
+                result = Err(err);
+                false
+            }
+        };
+        let token = self.source.advance_while(predicate).map_err(Either::Left)?;
+        let kind = result.map_err(Either::Right)?;
+        let kind = if self.source.is_empty() {
+            state.end_of_input().map_err(Either::Right)?
+        } else {
+            kind
+        };
+        Ok(kind.map(|kind| (token, kind)))
+    }
+}
+
+impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
+    type Token = (S::String, C::TokenKind);
+    type Error = Either<S::Error, C::Error>;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
         loop {
-            let start = self.next_index();
-            let ch = self.next_char()?;
-            let state = C::categorize(ch);
-            if let Some(kind) = self.advance_while(state) {
-                let end = self.next_index();
-                return Some(Token {
-                    span: Span { start, end },
-                    kind: (&self.source[start..end], kind),
-                });
+            let start = self.source.next_index();
+            match self.advance_while() {
+                Ok(Some(token)) => {
+                    let end = self.source.next_index();
+                    return Some(Ok(Token {
+                        span: Span { start, end },
+                        kind: token,
+                    }));
+                }
+                Ok(None) => continue,
+                Err(err) => return Some(Err(err)),
             }
         }
     }
 }
 
-impl<'s, C: CharSet> Tokenizer for CharSetTokenizer<'s, C> {
-    type Token = (&'s str, C::TokenKind);
-    type Error = Infallible;
+impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
+    type Item = Result<Token<<Self as Tokenizer>::Token>, <Self as Tokenizer>::Error>;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
-        self.next().map(Result::Ok)
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_token()
     }
 }
 
-pub type SimpleTokenizer<'s> = CharSetTokenizer<'s, SimpleCharSet>;
+pub type SimpleTokenizer<'s> = CharSetTokenizer<StrSource<'s>, SimpleCharSet>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum SimpleCharSet {
+    #[default]
+    None,
     /// A number, which can be an integer, or a floating-point number
     Number(NumberState),
     /// An identifier consists of a character with the Unicode `XID_Start` property, followed by a
@@ -151,19 +269,7 @@ pub enum SimpleCharSet {
     BreakNext(Option<SimpleCharSetTokenKind>),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NumberState {
-    /// The first digit of the integer part has been matched
-    Integer,
-    /// The dot separating the integer and fractional parts has been matched
-    Dot,
-    /// The first digit of the fractional part has been matched
-    Fractional,
-}
-
-impl CharSet for SimpleCharSet {
-    type TokenKind = SimpleCharSetTokenKind;
-
+impl SimpleCharSet {
     fn categorize(ch: char) -> Self {
         match ch {
             '"' => Self::String(false),
@@ -176,85 +282,109 @@ impl CharSet for SimpleCharSet {
             _ => Self::Other,
         }
     }
+}
 
-    fn next_char(&mut self, ch: char) -> ControlFlow<Option<Self::TokenKind>> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NumberState {
+    /// The first digit of the integer part has been matched
+    Integer,
+    /// The dot separating the integer and fractional parts has been matched
+    Dot,
+    /// The first digit of the fractional part has been matched
+    Fractional,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SimpleCharSetError {
+    #[error("unterminated string")]
+    UnterminatedString,
+}
+
+impl CharSet<char> for SimpleCharSet {
+    type TokenKind = SimpleCharSetTokenKind;
+    type Error = SimpleCharSetError;
+
+    fn next_char(&mut self, ch: char) -> CharSetResult<Self::TokenKind, Self::Error> {
         match (*self, ch) {
+            (Self::None, ch) => {
+                *self = Self::categorize(ch);
+                CharSetResult::Continue
+            }
             (Self::Number(mut state), ch) => {
                 let res = state.next_char(ch);
                 *self = Self::Number(state);
                 res
             }
-            (Self::Identifier, ch) if is_ident_char(ch) => ControlFlow::Continue(()),
+            (Self::Identifier, ch) if is_ident_char(ch) => CharSetResult::Continue,
             (Self::String(false), '"') => {
                 *self = Self::BreakNext(Some(SimpleCharSetTokenKind::String));
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
             (Self::String(escaped), '\\') => {
                 *self = Self::String(!escaped);
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
             (Self::String(_), _) => {
                 *self = Self::String(false);
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
-            (Self::Comparison, ch) if is_comparison_char(ch) => ControlFlow::Continue(()),
+            (Self::Comparison, ch) if is_comparison_char(ch) => CharSetResult::Continue,
             (Self::Dot, ch) if is_number_start_char(ch) => {
                 *self = Self::Number(NumberState::Dot);
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
             (Self::Dot, ch) if is_other_continuation_char(ch) => {
                 *self = Self::Other;
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
-            (Self::Other, ch) if is_other_continuation_char(ch) => ControlFlow::Continue(()),
+            (Self::Other, ch) if is_other_continuation_char(ch) => CharSetResult::Continue,
             (
                 Self::Identifier | Self::Singleton | Self::Comparison | Self::Other | Self::Dot,
                 _,
-            ) => ControlFlow::Break(Some(SimpleCharSetTokenKind::Tag)),
-            (Self::Whitespace, ch) if ch.is_whitespace() => ControlFlow::Continue(()),
-            (Self::Whitespace, _) => ControlFlow::Break(None),
-            (Self::BreakNext(kind), _) => ControlFlow::Break(kind),
+            ) => CharSetResult::Done(Some(SimpleCharSetTokenKind::Tag)),
+            (Self::Whitespace, ch) if ch.is_whitespace() => CharSetResult::Continue,
+            (Self::Whitespace, _) => CharSetResult::Done(None),
+            (Self::BreakNext(kind), _) => CharSetResult::Done(kind),
         }
     }
 
-    fn end_of_input(self) -> Option<Self::TokenKind> {
+    fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error> {
         match self {
+            Self::None => Ok(None),
             Self::Number(state) => state.end_of_input(),
             Self::Identifier | Self::Singleton | Self::Comparison | Self::Dot | Self::Other => {
-                Some(SimpleCharSetTokenKind::Tag)
+                Ok(Some(SimpleCharSetTokenKind::Tag))
             }
-            Self::String(_) => Some(SimpleCharSetTokenKind::UnterminatedString),
-            Self::BreakNext(kind) => kind,
-            Self::Whitespace => None,
+            Self::String(_) => Err(SimpleCharSetError::UnterminatedString),
+            Self::BreakNext(kind) => Ok(kind),
+            Self::Whitespace => Ok(None),
         }
     }
 }
 
 impl NumberState {
-    fn next_char(&mut self, ch: char) -> ControlFlow<Option<SimpleCharSetTokenKind>> {
+    fn next_char(&mut self, ch: char) -> CharSetResult<SimpleCharSetTokenKind, SimpleCharSetError> {
         match (*self, ch) {
             (Self::Integer, '.') => {
                 *self = Self::Dot;
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
             (Self::Dot, ch) if is_number_start_char(ch) => {
                 *self = Self::Fractional;
-                ControlFlow::Continue(())
+                CharSetResult::Continue
             }
-            (Self::Integer | Self::Fractional, ch) if is_number_char(ch) => {
-                ControlFlow::Continue(())
-            }
-            (Self::Integer, _) => ControlFlow::Break(Some(SimpleCharSetTokenKind::Integer)),
+            (Self::Integer | Self::Fractional, ch) if is_number_char(ch) => CharSetResult::Continue,
+            (Self::Integer, _) => CharSetResult::Done(Some(SimpleCharSetTokenKind::Integer)),
             (Self::Dot | Self::Fractional, _) => {
-                ControlFlow::Break(Some(SimpleCharSetTokenKind::Float))
+                CharSetResult::Done(Some(SimpleCharSetTokenKind::Float))
             }
         }
     }
 
-    fn end_of_input(self) -> Option<SimpleCharSetTokenKind> {
+    fn end_of_input(self) -> Result<Option<SimpleCharSetTokenKind>, SimpleCharSetError> {
         match self {
-            Self::Integer => Some(SimpleCharSetTokenKind::Integer),
-            Self::Dot | Self::Fractional => Some(SimpleCharSetTokenKind::Float),
+            Self::Integer => Ok(Some(SimpleCharSetTokenKind::Integer)),
+            Self::Dot | Self::Fractional => Ok(Some(SimpleCharSetTokenKind::Float)),
         }
     }
 }
@@ -277,7 +407,6 @@ pub enum SimpleCharSetTokenKind {
     Integer,
     Float,
     String,
-    UnterminatedString,
 }
 
 #[inline]
@@ -322,7 +451,7 @@ fn is_other_continuation_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{SimpleCharSetTokenKind, SimpleTokenizer};
+    use super::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
 
     #[test_case("abc", SimpleCharSetTokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", SimpleCharSetTokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
@@ -342,10 +471,15 @@ mod tests {
     #[test_case("1.234.5", SimpleCharSetTokenKind::Float, "1.234" ; "float with extra dot")]
     #[test_case(".234.5", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer and extra dot")]
     #[test_case(r#""abc\"\\\"\\""#, SimpleCharSetTokenKind::String, r#""abc\"\\\"\\""# ; "string")]
-    #[test_case(r#""abc\"\\\"abc"#, SimpleCharSetTokenKind::UnterminatedString, r#""abc\"\\\"abc"# ; "string unterminated")]
     #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
-        let actual = SimpleTokenizer::new(source).next().unwrap();
+        let actual = SimpleTokenizer::new(StrSource::new(source)).next().unwrap().unwrap();
         assert_eq!(actual.kind, (as_str, kind));
+    }
+
+    #[test]
+    fn unterminated_string() {
+        let source = r#""abc\"\\\"abc"#;
+        SimpleTokenizer::new(StrSource::new(source)).next().unwrap().unwrap_err();
     }
 }

@@ -637,13 +637,10 @@ mod tests {
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
         operator::Fixity,
-        token::{SimpleCharSetTokenKind, SimpleTokenizer},
+        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource, Tokenizer},
     };
 
     struct SimpleExprContext;
-
-    #[derive(Debug, Eq, PartialEq, thiserror::Error)]
-    enum SimpleParserError {}
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum SimpleDelimiter {
@@ -671,7 +668,7 @@ mod tests {
     }
 
     impl<'s> Parser<(&'s str, SimpleCharSetTokenKind)> for SimpleExprContext {
-        type Error = SimpleParserError;
+        type Error = Infallible;
         type Precedence = SimplePrecedence;
         type Delimiter = SimpleDelimiter;
         type BinaryOperator = &'s str;
@@ -818,7 +815,7 @@ mod tests {
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = parse(SimpleTokenizer::new(input), SimpleExprContext)?
+        let actual = parse(SimpleTokenizer::new(StrSource::new(input)), SimpleExprContext)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
@@ -835,17 +832,17 @@ mod tests {
     #[test_case("(3)!", "3", "!" ; "delimited with unary operators" )]
     #[test_case("abc def)", "abc", "def)" ; "ignores invalid after first term" )]
     fn parse_one(input: &str, output: &str, rest: &str) -> anyhow::Result<()> {
-        let mut tokens = SimpleTokenizer::new(input);
+        let mut tokens = SimpleTokenizer::new(StrSource::new(input));
         let actual = parse_one_term(&mut tokens, SimpleExprContext)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
-        let actual_rest = tokens.map(|tok| tok.kind).collect::<Vec<_>>();
-        let expected_rest = SimpleTokenizer::new(rest)
-            .map(|tok| tok.kind)
-            .collect::<Vec<_>>();
+        let actual_rest = tokens.map(|res| res.map(|tok| tok.kind)).collect::<Result<Vec<_>, _>>()?;
+        let expected_rest = SimpleTokenizer::new(StrSource::new(rest))
+            .map(|res| res.map(|tok| tok.kind))
+            .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(actual_rest, expected_rest);
         Ok(())
     }
@@ -873,9 +870,9 @@ mod tests {
     ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
-        expected: &[(ParseErrorKind<SimpleParserError, Infallible>, Range<usize>)],
+        expected: &[(ParseErrorKind<Infallible, <SimpleTokenizer as Tokenizer>::Error>, Range<usize>)],
     ) {
-        let actual = parse(SimpleTokenizer::new(input), SimpleExprContext)
+        let actual = parse(SimpleTokenizer::new(StrSource::new(input)), SimpleExprContext)
             .unwrap_err()
             .errors
             .into_iter()
