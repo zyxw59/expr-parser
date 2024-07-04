@@ -216,7 +216,7 @@ impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
     type Error = Either<S::Error, C::Error>;
 
     fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
-        loop {
+        while !self.source.is_empty() {
             let start = self.source.next_index();
             match self.advance_while() {
                 Ok(Some(token)) => {
@@ -230,6 +230,7 @@ impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
                 Err(err) => return Some(Err(err)),
             }
         }
+        None
     }
 }
 
