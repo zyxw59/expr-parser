@@ -52,6 +52,23 @@ pub enum ParseErrorKind<P, T> {
     Tokenizer(T),
 }
 
+impl<P, T> ParseErrorKind<P, T> {
+    #[cfg(test)]
+    pub(crate) fn map_tokenizer_error<U>(self, f: impl FnOnce(T) -> U) -> ParseErrorKind<P, U> {
+        match self {
+            Self::EndOfInput { expected } => ParseErrorKind::EndOfInput { expected },
+            Self::UnexpectedToken { expected } => ParseErrorKind::UnexpectedToken { expected },
+            Self::MismatchedDelimiter { opening } => {
+                ParseErrorKind::MismatchedDelimiter { opening }
+            }
+            Self::UnmatchedRightDelimiter => ParseErrorKind::UnmatchedRightDelimiter,
+            Self::UnmatchedLeftDelimiter => ParseErrorKind::UnmatchedLeftDelimiter,
+            Self::Parser(e) => ParseErrorKind::Parser(e),
+            Self::Tokenizer(e) => ParseErrorKind::Tokenizer(f(e)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ParseIntError {
     #[error("Empty string")]

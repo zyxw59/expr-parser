@@ -633,7 +633,7 @@ mod tests {
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
         operator::Fixity,
-        token::{SimpleCharSetTokenKind, SimpleTokenizer, SimpleTokenizerError, StrSource},
+        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource},
     };
 
     struct SimpleExprContext;
@@ -871,10 +871,7 @@ mod tests {
     ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
-        expected: &[(
-            ParseErrorKind<Infallible, SimpleTokenizerError>,
-            Range<usize>,
-        )],
+        expected: &[(ParseErrorKind<Infallible, Infallible>, Range<usize>)],
     ) {
         let actual = parse(
             SimpleTokenizer::new(StrSource::new(input)),
@@ -883,7 +880,12 @@ mod tests {
         .unwrap_err()
         .errors
         .into_iter()
-        .map(|err| (err.kind, err.span.into_range()))
+        .map(|err| {
+            (
+                err.kind.map_tokenizer_error(|_| unreachable!()),
+                err.span.into_range(),
+            )
+        })
         .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }

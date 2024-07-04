@@ -98,6 +98,15 @@ pub struct BufReadSource<R> {
 }
 
 impl<R: BufRead> BufReadSource<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buffer: String::new(),
+            index: 0,
+            is_empty: false,
+        }
+    }
+
     fn flil_buf(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
             self.is_empty = self.reader.read_line(&mut self.buffer)? == 0;
@@ -246,8 +255,7 @@ impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
     }
 }
 
-pub type SimpleTokenizer<'s> = CharSetTokenizer<StrSource<'s>, SimpleCharSet>;
-pub type SimpleTokenizerError = Either<Infallible, SimpleCharSetError>;
+pub type SimpleTokenizer<S> = CharSetTokenizer<S, SimpleCharSet>;
 
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum SimpleCharSet {
@@ -457,7 +465,7 @@ fn is_other_continuation_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
+    use super::{BufReadSource, SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
 
     #[test_case("abc", SimpleCharSetTokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", SimpleCharSetTokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
@@ -493,5 +501,21 @@ mod tests {
             .next()
             .unwrap()
             .unwrap_err();
+    }
+
+    #[test_case("abc<>+1", "abc <> + 1" ; "some tokens")]
+    #[test_case("<->", "< ->" ; "arrows")]
+    fn tokenize_many(source: &str, tokens: &str) {
+        let actual_str = SimpleTokenizer::new(StrSource::new(source))
+            .map(|res| res.map(|tok| tok.kind.0))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let expected = tokens.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(actual_str, expected);
+        let actual_br = SimpleTokenizer::new(BufReadSource::new(source.as_bytes()))
+            .map(|res| res.map(|tok| tok.kind.0))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(actual_br, expected);
     }
 }
