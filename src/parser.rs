@@ -16,7 +16,18 @@ where
     P: Parser<T>,
     I: Iterator<Item = Token<T>>,
 {
-    ParseHelper::new(tokens, parser).parse()
+    ParseHelper::new(tokens, parser).parse_all()
+}
+
+pub fn parse_one_term<I, T, P>(
+    tokens: I,
+    parser: P,
+) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>>
+where
+    P: Parser<T>,
+    I: Iterator<Item = Token<T>>,
+{
+    ParseHelper::new(tokens, parser).parse_one_term()
 }
 
 pub type ExpressionQueue<P, T> = VecDeque<
@@ -52,12 +63,54 @@ where
         }
     }
 
-    fn parse(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+    /// Parses until the end of input
+    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
         let mut end_of_input = 0;
         while let Some(token) = self.tokenizer.next() {
             end_of_input = token.span.end;
             self.parse_next(token);
         }
+        self.finish_parsing(end_of_input)
+    }
+
+    /// Parses until a single term has been completed.
+    ///
+    /// This means zero or more prefix operators followed by either a term token or a delimited
+    /// group.
+    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+        let mut end_of_input = 0;
+        let mut delimiter_stack_index = None;
+        while let Some(token) = self.tokenizer.next() {
+            end_of_input = token.span.end;
+            self.parse_next(token);
+            if let Some(top) = self.stack.peek_top() {
+                if top.delimiter.is_some() {
+                    delimiter_stack_index = Some(self.stack.len());
+                    break;
+                }
+                if self.state == State::PostTerm {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if let Some(delimiter_stack_index) = delimiter_stack_index {
+            while let Some(token) = self.tokenizer.next() {
+                end_of_input = token.span.end;
+                self.parse_next(token);
+                if self.stack.len() < delimiter_stack_index {
+                    break;
+                }
+            }
+        }
+        self.finish_parsing(end_of_input)
+    }
+
+    fn finish_parsing(
+        mut self,
+        end_of_input: usize,
+    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
@@ -448,6 +501,14 @@ impl<P, D, B, U, T> Stack<P, D, B, U, T> {
         self.0.pop()
     }
 
+    fn peek_top(&self) -> Option<&StackElement<P, D, B, U, T>> {
+        self.0.last()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Pops the stack if the new operator has lower precedence than the top of the stack
     fn pop_if_lower_precedence(&mut self, fixity: &Fixity<P>) -> Option<StackElement<P, D, B, U, T>>
     where
@@ -548,7 +609,10 @@ mod tests {
 
     use test_case::test_case;
 
-    use super::{parse, Delimiter, Element, Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM};
+    use super::{
+        parse, parse_one_term, Delimiter, Element, Parser, Postfix, Prefix, EXPECT_OPERATOR,
+        EXPECT_TERM,
+    };
     use crate::{
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
@@ -740,6 +804,29 @@ mod tests {
             .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test_case("3", "3", "" ; "single term" )]
+    #[test_case("-3!", "3 -", "!" ; "unary operators" )]
+    #[test_case("3!", "3", "!" ; "postfix operator" )]
+    #[test_case("-3 a", "3 -", "a" ; "unary operators with additional" )]
+    #[test_case("(5 + 4) * (3 - 2)", "5 4 +", "* (3 - 2)" ; "delimited group" )]
+    #[test_case("(3)!", "3", "!" ; "delimited with unary operators" )]
+    #[test_case("abc def)", "abc", "def)" ; "ignores invalid after first term" )]
+    fn parse_one(input: &str, output: &str, rest: &str) -> anyhow::Result<()> {
+        let mut tokens = SimpleTokenizer::new(input);
+        let actual = parse_one_term(&mut tokens, SimpleExprContext)?
+            .into_iter()
+            .map(expr_to_str)
+            .collect::<Vec<_>>();
+        let expected = output.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        let actual_rest = tokens.map(|tok| tok.kind).collect::<Vec<_>>();
+        let expected_rest = SimpleTokenizer::new(rest)
+            .map(|tok| tok.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(actual_rest, expected_rest);
         Ok(())
     }
 
