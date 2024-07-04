@@ -175,6 +175,12 @@ pub trait CharSet<C>: Default {
     fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error>;
 }
 
+type CharSetToken<S, C> = (
+    <S as Source>::String,
+    <C as CharSet<<S as Source>::Char>>::TokenKind,
+);
+type CharSetError<S, C> = Either<<S as Source>::Error, <C as CharSet<<S as Source>::Char>>::Error>;
+
 impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
     pub fn new(source: S) -> Self {
         Self {
@@ -184,9 +190,7 @@ impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
     }
 
     /// Advances in the input as long as the character matches the character set.
-    fn advance_while(
-        &mut self,
-    ) -> Result<Option<(S::String, C::TokenKind)>, Either<S::Error, C::Error>> {
+    fn advance_while(&mut self) -> Result<Option<CharSetToken<S, C>>, CharSetError<S, C>> {
         let mut result = Ok(None);
         let mut state = C::default();
         let predicate = |c| match state.next_char(c) {
@@ -212,8 +216,8 @@ impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
 }
 
 impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
-    type Token = (S::String, C::TokenKind);
-    type Error = Either<S::Error, C::Error>;
+    type Token = CharSetToken<S, C>;
+    type Error = CharSetError<S, C>;
 
     fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
         while !self.source.is_empty() {
@@ -243,6 +247,7 @@ impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
 }
 
 pub type SimpleTokenizer<'s> = CharSetTokenizer<StrSource<'s>, SimpleCharSet>;
+pub type SimpleTokenizerError = Either<Infallible, SimpleCharSetError>;
 
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum SimpleCharSet {

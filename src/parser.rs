@@ -633,7 +633,7 @@ mod tests {
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
         operator::Fixity,
-        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource, Tokenizer},
+        token::{SimpleCharSetTokenKind, SimpleTokenizer, SimpleTokenizerError, StrSource},
     };
 
     struct SimpleExprContext;
@@ -872,7 +872,7 @@ mod tests {
     fn parse_expression_fail(
         input: &str,
         expected: &[(
-            ParseErrorKind<Infallible, <SimpleTokenizer as Tokenizer>::Error>,
+            ParseErrorKind<Infallible, SimpleTokenizerError>,
             Range<usize>,
         )],
     ) {
