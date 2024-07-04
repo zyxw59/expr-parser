@@ -5,6 +5,7 @@ use std::{
     marker::PhantomData,
 };
 
+use bstr::ByteSlice;
 use itertools::Either;
 use unicode_xid::UnicodeXID;
 
@@ -92,7 +93,7 @@ impl<'s> Source for StrSource<'s> {
 
 pub struct BufReadSource<R> {
     reader: R,
-    buffer: String,
+    buffer: Vec<u8>,
     index: usize,
     is_empty: bool,
 }
@@ -101,7 +102,7 @@ impl<R: BufRead> BufReadSource<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            buffer: String::new(),
+            buffer: Vec::new(),
             index: 0,
             is_empty: false,
         }
@@ -109,7 +110,14 @@ impl<R: BufRead> BufReadSource<R> {
 
     fn flil_buf(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
-            self.is_empty = self.reader.read_line(&mut self.buffer)? == 0;
+            match self.reader.read_until(b'\n', &mut self.buffer) {
+                Ok(0) => self.is_empty = true,
+                Ok(_) => {}
+                Err(error) => {
+                    self.is_empty = true;
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }
@@ -138,13 +146,15 @@ impl<R: BufRead> Source for BufReadSource<R> {
             let buffer = &self.buffer;
             let offset = buffer
                 .char_indices()
-                .skip_while(|(_, c)| predicate(*c))
-                .map(|(idx, _)| idx)
+                .skip_while(|(_, _, c)| predicate(*c))
+                .map(|(idx, _, _)| idx)
                 .next()
                 .unwrap_or(buffer.len());
             self.index += offset;
             let mut s = self.buffer.split_off(offset);
             std::mem::swap(&mut s, &mut self.buffer);
+            let s =
+                String::from_utf8(s).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             if token.is_empty() {
                 token = s;
             } else {
@@ -517,5 +527,17 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(actual_br, expected);
+    }
+
+    #[test]
+    fn invalid_utf8() {
+        let source: &[u8] = b"abc\x80\x81def";
+        let tokens = SimpleTokenizer::new(BufReadSource::new(source))
+            .map(|res| res.map(|tok| tok.kind.0).map_err(|_| ()))
+            .collect::<Vec<Result<_, _>>>();
+        assert_eq!(
+            tokens,
+            &[Ok("abc".to_owned()), Err(()), Ok("def".to_owned())]
+        );
     }
 }
