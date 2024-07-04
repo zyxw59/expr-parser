@@ -63,9 +63,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     }
 
     /// Parses until the end of input
-    fn parse_all(
-        mut self,
-    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
+    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
         let mut end_of_input = 0;
         while let Some(token) = self.tokenizer.next_token() {
             self.handle_token_result(token, &mut end_of_input);
@@ -77,9 +75,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     ///
     /// This means zero or more prefix operators followed by either a term token or a delimited
     /// group.
-    fn parse_one_term(
-        mut self,
-    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
+    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
         let mut end_of_input = 0;
         let mut delimiter_stack_index = None;
         while let Some(token) = self.tokenizer.next_token() {
@@ -625,7 +621,7 @@ fn parse_float(s: &str) -> Result<f64, ParseFloatError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{ops::Range, convert::Infallible};
+    use std::{convert::Infallible, ops::Range};
 
     use test_case::test_case;
 
@@ -815,10 +811,13 @@ mod tests {
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = parse(SimpleTokenizer::new(StrSource::new(input)), SimpleExprContext)?
-            .into_iter()
-            .map(expr_to_str)
-            .collect::<Vec<_>>();
+        let actual = parse(
+            SimpleTokenizer::new(StrSource::new(input)),
+            SimpleExprContext,
+        )?
+        .into_iter()
+        .map(expr_to_str)
+        .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
         Ok(())
@@ -839,7 +838,9 @@ mod tests {
             .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
-        let actual_rest = tokens.map(|res| res.map(|tok| tok.kind)).collect::<Result<Vec<_>, _>>()?;
+        let actual_rest = tokens
+            .map(|res| res.map(|tok| tok.kind))
+            .collect::<Result<Vec<_>, _>>()?;
         let expected_rest = SimpleTokenizer::new(StrSource::new(rest))
             .map(|res| res.map(|tok| tok.kind))
             .collect::<Result<Vec<_>, _>>()?;
@@ -870,14 +871,20 @@ mod tests {
     ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
-        expected: &[(ParseErrorKind<Infallible, <SimpleTokenizer as Tokenizer>::Error>, Range<usize>)],
+        expected: &[(
+            ParseErrorKind<Infallible, <SimpleTokenizer as Tokenizer>::Error>,
+            Range<usize>,
+        )],
     ) {
-        let actual = parse(SimpleTokenizer::new(StrSource::new(input)), SimpleExprContext)
-            .unwrap_err()
-            .errors
-            .into_iter()
-            .map(|err| (err.kind, err.span.into_range()))
-            .collect::<Vec<_>>();
+        let actual = parse(
+            SimpleTokenizer::new(StrSource::new(input)),
+            SimpleExprContext,
+        )
+        .unwrap_err()
+        .errors
+        .into_iter()
+        .map(|err| (err.kind, err.span.into_range()))
+        .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }
 }

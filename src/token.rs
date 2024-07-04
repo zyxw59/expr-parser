@@ -474,13 +474,19 @@ mod tests {
     #[test_case(r#""abc\"\\\"\\""#, SimpleCharSetTokenKind::String, r#""abc\"\\\"\\""# ; "string")]
     #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
-        let actual = SimpleTokenizer::new(StrSource::new(source)).next().unwrap().unwrap();
+        let actual = SimpleTokenizer::new(StrSource::new(source))
+            .next()
+            .unwrap()
+            .unwrap();
         assert_eq!(actual.kind, (as_str, kind));
     }
 
     #[test]
     fn unterminated_string() {
         let source = r#""abc\"\\\"abc"#;
-        SimpleTokenizer::new(StrSource::new(source)).next().unwrap().unwrap_err();
+        SimpleTokenizer::new(StrSource::new(source))
+            .next()
+            .unwrap()
+            .unwrap_err();
     }
 }
