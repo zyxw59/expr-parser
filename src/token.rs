@@ -1,8 +1,24 @@
-use std::{fmt, marker::PhantomData, ops::ControlFlow};
+use std::{fmt, marker::PhantomData, ops::ControlFlow, convert::Infallible};
 
 use unicode_xid::UnicodeXID;
 
 use crate::Span;
+
+pub trait Tokenizer {
+    type Token;
+    type Error;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>>;
+}
+
+impl<T: Tokenizer> Tokenizer for &mut T {
+    type Token = T::Token;
+    type Error = T::Error;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+        T::next_token(self)
+    }
+}
 
 /// A tokenizer which tokenizes characters by grouping them into sets.
 pub struct CharSetTokenizer<'s, C> {
@@ -97,6 +113,15 @@ impl<'s, C: CharSet> Iterator for CharSetTokenizer<'s, C> {
                 });
             }
         }
+    }
+}
+
+impl<'s, C: CharSet> Tokenizer for CharSetTokenizer<'s, C> {
+    type Token = (&'s str, C::TokenKind);
+    type Error = Infallible;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+        self.next().map(Result::Ok)
     }
 }
 
