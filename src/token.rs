@@ -27,6 +27,103 @@ impl<T: Tokenizer> Tokenizer for &mut T {
     }
 }
 
+/// A tokenizer which tokenizes characters by grouping them into sets.
+pub struct CharSetTokenizer<S, C> {
+    source: S,
+    _marker: PhantomData<fn() -> C>,
+}
+
+pub enum CharSetResult<T, E> {
+    /// Accept the character in the token
+    Continue,
+    /// Reject the character and optionally produce a token
+    Done(Option<T>),
+    /// Reject the character and discard the current token, returning an error
+    Err(E),
+}
+
+pub trait CharSet<C>: Default {
+    type TokenKind;
+    type Error;
+
+    /// Categorize a charcter while continuing a potential token.
+    fn next_char(&mut self, c: C) -> CharSetResult<Self::TokenKind, Self::Error>;
+
+    /// What token kind (if any) to return if end of input is reached.
+    fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error>;
+}
+
+type CharSetToken<S, C> = (
+    <S as Source>::String,
+    <C as CharSet<<S as Source>::Char>>::TokenKind,
+);
+type CharSetError<S, C> = Either<<S as Source>::Error, <C as CharSet<<S as Source>::Char>>::Error>;
+
+impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
+    pub fn new(source: S) -> Self {
+        Self {
+            source,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Advances in the input as long as the character matches the character set.
+    fn advance_while(&mut self) -> Result<Option<CharSetToken<S, C>>, CharSetError<S, C>> {
+        let mut result = Ok(None);
+        let mut state = C::default();
+        let predicate = |c| match state.next_char(c) {
+            CharSetResult::Continue => true,
+            CharSetResult::Done(new_kind) => {
+                result = Ok(new_kind);
+                false
+            }
+            CharSetResult::Err(err) => {
+                result = Err(err);
+                false
+            }
+        };
+        let token = self.source.advance_while(predicate).map_err(Either::Left)?;
+        let kind = result.map_err(Either::Right)?;
+        let kind = if self.source.is_empty() {
+            state.end_of_input().map_err(Either::Right)?
+        } else {
+            kind
+        };
+        Ok(kind.map(|kind| (token, kind)))
+    }
+}
+
+impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
+    type Token = CharSetToken<S, C>;
+    type Error = CharSetError<S, C>;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+        while !self.source.is_empty() {
+            let start = self.source.next_index();
+            match self.advance_while() {
+                Ok(Some(token)) => {
+                    let end = self.source.next_index();
+                    return Some(Ok(Token {
+                        span: Span { start, end },
+                        kind: token,
+                    }));
+                }
+                Ok(None) => continue,
+                Err(err) => return Some(Err(err)),
+            }
+        }
+        None
+    }
+}
+
+impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
+    type Item = Result<Token<<Self as Tokenizer>::Token>, <Self as Tokenizer>::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_token()
+    }
+}
+
 pub trait Source {
     type Char;
     type String;
@@ -165,103 +262,6 @@ impl<R: BufRead> Source for BufReadSource<R> {
             }
         }
         Ok(token)
-    }
-}
-
-/// A tokenizer which tokenizes characters by grouping them into sets.
-pub struct CharSetTokenizer<S, C> {
-    source: S,
-    _marker: PhantomData<fn() -> C>,
-}
-
-pub enum CharSetResult<T, E> {
-    /// Accept the character in the token
-    Continue,
-    /// Reject the character and optionally produce a token
-    Done(Option<T>),
-    /// Reject the character and discard the current token, returning an error
-    Err(E),
-}
-
-pub trait CharSet<C>: Default {
-    type TokenKind;
-    type Error;
-
-    /// Categorize a charcter while continuing a potential token.
-    fn next_char(&mut self, c: C) -> CharSetResult<Self::TokenKind, Self::Error>;
-
-    /// What token kind (if any) to return if end of input is reached.
-    fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error>;
-}
-
-type CharSetToken<S, C> = (
-    <S as Source>::String,
-    <C as CharSet<<S as Source>::Char>>::TokenKind,
-);
-type CharSetError<S, C> = Either<<S as Source>::Error, <C as CharSet<<S as Source>::Char>>::Error>;
-
-impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
-    pub fn new(source: S) -> Self {
-        Self {
-            source,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Advances in the input as long as the character matches the character set.
-    fn advance_while(&mut self) -> Result<Option<CharSetToken<S, C>>, CharSetError<S, C>> {
-        let mut result = Ok(None);
-        let mut state = C::default();
-        let predicate = |c| match state.next_char(c) {
-            CharSetResult::Continue => true,
-            CharSetResult::Done(new_kind) => {
-                result = Ok(new_kind);
-                false
-            }
-            CharSetResult::Err(err) => {
-                result = Err(err);
-                false
-            }
-        };
-        let token = self.source.advance_while(predicate).map_err(Either::Left)?;
-        let kind = result.map_err(Either::Right)?;
-        let kind = if self.source.is_empty() {
-            state.end_of_input().map_err(Either::Right)?
-        } else {
-            kind
-        };
-        Ok(kind.map(|kind| (token, kind)))
-    }
-}
-
-impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
-    type Token = CharSetToken<S, C>;
-    type Error = CharSetError<S, C>;
-
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
-        while !self.source.is_empty() {
-            let start = self.source.next_index();
-            match self.advance_while() {
-                Ok(Some(token)) => {
-                    let end = self.source.next_index();
-                    return Some(Ok(Token {
-                        span: Span { start, end },
-                        kind: token,
-                    }));
-                }
-                Ok(None) => continue,
-                Err(err) => return Some(Err(err)),
-            }
-        }
-        None
-    }
-}
-
-impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
-    type Item = Result<Token<<Self as Tokenizer>::Token>, <Self as Tokenizer>::Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_token()
     }
 }
 
