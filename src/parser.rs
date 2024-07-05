@@ -4,55 +4,54 @@ use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
     expression::{Expression, ExpressionKind},
     operator::Fixity,
-    token::Token,
+    token::{Token, Tokenizer},
     Span,
 };
 
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<I, T, P>(tokens: I, parser: P) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>>
+pub fn parse<T, P>(
+    tokens: T,
+    parser: P,
+) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>>
 where
-    P: Parser<T>,
-    I: Iterator<Item = Token<T>>,
+    P: Parser<T::Token>,
+    T: Tokenizer,
 {
     ParseHelper::new(tokens, parser).parse_all()
 }
 
-pub fn parse_one_term<I, T, P>(
-    tokens: I,
+pub fn parse_one_term<T, P>(
+    tokens: T,
     parser: P,
-) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>>
+) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>>
 where
-    P: Parser<T>,
-    I: Iterator<Item = Token<T>>,
+    P: Parser<T::Token>,
+    T: Tokenizer,
 {
     ParseHelper::new(tokens, parser).parse_one_term()
 }
 
 pub type ExpressionQueue<P, T> = VecDeque<
     Expression<
-        <P as Parser<T>>::BinaryOperator,
-        <P as Parser<T>>::UnaryOperator,
-        <P as Parser<T>>::Term,
+        <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
+        <P as Parser<<T as Tokenizer>::Token>>::UnaryOperator,
+        <P as Parser<<T as Tokenizer>::Token>>::Term,
     >,
 >;
 
-struct ParseHelper<I, T, P: Parser<T>> {
-    tokenizer: I,
+struct ParseHelper<T: Tokenizer, P: Parser<T::Token>> {
+    tokenizer: T,
     parser: P,
     state: State,
     stack: ParserStack<P, T>,
     queue: ExpressionQueue<P, T>,
-    errors: Vec<ParseError<P::Error>>,
+    errors: Vec<ParseError<P::Error, T::Error>>,
 }
 
-impl<I, T, P> ParseHelper<I, T, P>
-where
-    P: Parser<T>,
-    I: Iterator<Item = Token<T>>,
-{
-    fn new(tokenizer: I, parser: P) -> Self {
+impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
+    fn new(tokenizer: T, parser: P) -> Self {
         Self {
             tokenizer,
             parser,
@@ -64,11 +63,10 @@ where
     }
 
     /// Parses until the end of input
-    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
         let mut end_of_input = 0;
-        while let Some(token) = self.tokenizer.next() {
-            end_of_input = token.span.end;
-            self.parse_next(token);
+        while let Some(token) = self.tokenizer.next_token() {
+            self.handle_token_result(token, &mut end_of_input);
         }
         self.finish_parsing(end_of_input)
     }
@@ -77,12 +75,11 @@ where
     ///
     /// This means zero or more prefix operators followed by either a term token or a delimited
     /// group.
-    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
         let mut end_of_input = 0;
         let mut delimiter_stack_index = None;
-        while let Some(token) = self.tokenizer.next() {
-            end_of_input = token.span.end;
-            self.parse_next(token);
+        while let Some(token) = self.tokenizer.next_token() {
+            self.handle_token_result(token, &mut end_of_input);
             if let Some(top) = self.stack.peek_top() {
                 if top.delimiter.is_some() {
                     delimiter_stack_index = Some(self.stack.len());
@@ -96,9 +93,8 @@ where
             }
         }
         if let Some(delimiter_stack_index) = delimiter_stack_index {
-            while let Some(token) = self.tokenizer.next() {
-                end_of_input = token.span.end;
-                self.parse_next(token);
+            while let Some(token) = self.tokenizer.next_token() {
+                self.handle_token_result(token, &mut end_of_input);
                 if self.stack.len() < delimiter_stack_index {
                     break;
                 }
@@ -107,10 +103,30 @@ where
         self.finish_parsing(end_of_input)
     }
 
+    fn handle_token_result(
+        &mut self,
+        result: Result<Token<T::Token>, T::Error>,
+        end_of_input: &mut usize,
+    ) {
+        match result {
+            Err(e) => self.errors.push(ParseError {
+                span: Span {
+                    start: *end_of_input,
+                    end: *end_of_input,
+                },
+                kind: ParseErrorKind::Tokenizer(e),
+            }),
+            Ok(token) => {
+                *end_of_input = token.span.end;
+                self.parse_next(token);
+            }
+        }
+    }
+
     fn finish_parsing(
         mut self,
         end_of_input: usize,
-    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error>> {
+    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
@@ -158,7 +174,7 @@ where
         }
     }
 
-    fn parse_next(&mut self, token: Token<T>) {
+    fn parse_next(&mut self, token: Token<T::Token>) {
         match self.parser.parse_token(token.kind) {
             Ok(element) => match self.state {
                 State::PostOperator => self.parse_term(token.span, element),
@@ -167,7 +183,7 @@ where
             Err(error) => {
                 self.errors.push(ParseError {
                     span: token.span,
-                    kind: ParseErrorKind::Other(error),
+                    kind: ParseErrorKind::Parser(error),
                 });
                 // assume that the invalid token was the more expected kind, ideally producing the
                 // most useful errors.
@@ -179,7 +195,7 @@ where
         }
     }
 
-    fn parse_term(&mut self, span: Span, element: ParserElement<P, T>) {
+    fn parse_term(&mut self, span: Span, element: ParserElement<P, T::Token>) {
         match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
@@ -242,7 +258,7 @@ where
         }
     }
 
-    fn parse_operator(&mut self, span: Span, element: ParserElement<P, T>) {
+    fn parse_operator(&mut self, span: Span, element: ParserElement<P, T::Token>) {
         match element.postfix {
             Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(span, delimiter),
             Postfix::BinaryOperator {
@@ -475,11 +491,11 @@ enum State {
 struct Stack<P, D, B, U, T>(Vec<StackElement<P, D, B, U, T>>);
 
 type ParserStack<P, T> = Stack<
-    <P as Parser<T>>::Precedence,
-    <P as Parser<T>>::Delimiter,
-    <P as Parser<T>>::BinaryOperator,
-    <P as Parser<T>>::UnaryOperator,
-    <P as Parser<T>>::Term,
+    <P as Parser<<T as Tokenizer>::Token>>::Precedence,
+    <P as Parser<<T as Tokenizer>::Token>>::Delimiter,
+    <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
+    <P as Parser<<T as Tokenizer>::Token>>::UnaryOperator,
+    <P as Parser<<T as Tokenizer>::Token>>::Term,
 >;
 
 impl<P, D, B, U, T> Default for Stack<P, D, B, U, T> {
@@ -605,7 +621,7 @@ fn parse_float(s: &str) -> Result<f64, ParseFloatError> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
+    use std::{convert::Infallible, ops::Range};
 
     use test_case::test_case;
 
@@ -617,13 +633,10 @@ mod tests {
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
         operator::Fixity,
-        token::{SimpleCharSetTokenKind, SimpleTokenizer},
+        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource},
     };
 
     struct SimpleExprContext;
-
-    #[derive(Debug, Eq, PartialEq, thiserror::Error)]
-    enum SimpleParserError {}
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum SimpleDelimiter {
@@ -651,7 +664,7 @@ mod tests {
     }
 
     impl<'s> Parser<(&'s str, SimpleCharSetTokenKind)> for SimpleExprContext {
-        type Error = SimpleParserError;
+        type Error = Infallible;
         type Precedence = SimplePrecedence;
         type Delimiter = SimpleDelimiter;
         type BinaryOperator = &'s str;
@@ -798,10 +811,13 @@ mod tests {
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = parse(SimpleTokenizer::new(input), SimpleExprContext)?
-            .into_iter()
-            .map(expr_to_str)
-            .collect::<Vec<_>>();
+        let actual = parse(
+            SimpleTokenizer::new(StrSource::new(input)),
+            SimpleExprContext,
+        )?
+        .into_iter()
+        .map(expr_to_str)
+        .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
         Ok(())
@@ -815,17 +831,19 @@ mod tests {
     #[test_case("(3)!", "3", "!" ; "delimited with unary operators" )]
     #[test_case("abc def)", "abc", "def)" ; "ignores invalid after first term" )]
     fn parse_one(input: &str, output: &str, rest: &str) -> anyhow::Result<()> {
-        let mut tokens = SimpleTokenizer::new(input);
+        let mut tokens = SimpleTokenizer::new(StrSource::new(input));
         let actual = parse_one_term(&mut tokens, SimpleExprContext)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
         let expected = output.split_whitespace().collect::<Vec<_>>();
         assert_eq!(actual, expected);
-        let actual_rest = tokens.map(|tok| tok.kind).collect::<Vec<_>>();
-        let expected_rest = SimpleTokenizer::new(rest)
-            .map(|tok| tok.kind)
-            .collect::<Vec<_>>();
+        let actual_rest = tokens
+            .map(|res| res.map(|tok| tok.kind))
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_rest = SimpleTokenizer::new(StrSource::new(rest))
+            .map(|res| res.map(|tok| tok.kind))
+            .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(actual_rest, expected_rest);
         Ok(())
     }
@@ -853,14 +871,22 @@ mod tests {
     ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
-        expected: &[(ParseErrorKind<SimpleParserError>, Range<usize>)],
+        expected: &[(ParseErrorKind<Infallible, Infallible>, Range<usize>)],
     ) {
-        let actual = parse(SimpleTokenizer::new(input), SimpleExprContext)
-            .unwrap_err()
-            .errors
-            .into_iter()
-            .map(|err| (err.kind, err.span.into_range()))
-            .collect::<Vec<_>>();
+        let actual = parse(
+            SimpleTokenizer::new(StrSource::new(input)),
+            SimpleExprContext,
+        )
+        .unwrap_err()
+        .errors
+        .into_iter()
+        .map(|err| {
+            (
+                err.kind.map_tokenizer_error(|_| unreachable!()),
+                err.span.into_range(),
+            )
+        })
+        .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }
 }
