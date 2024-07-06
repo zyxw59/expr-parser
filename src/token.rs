@@ -6,6 +6,7 @@ use std::{
 };
 
 use bstr::ByteSlice;
+use bytes::{Bytes, BytesMut};
 use itertools::Either;
 use unicode_xid::UnicodeXID;
 
@@ -201,7 +202,8 @@ impl<'s> Source for StrSource<'s> {
 
 pub struct BufReadSource<R> {
     reader: R,
-    buffer: Vec<u8>,
+    line_buffer: Vec<u8>,
+    buffer: BytesMut,
     index: usize,
     is_empty: bool,
 }
@@ -210,7 +212,8 @@ impl<R: BufRead> BufReadSource<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            buffer: Vec::new(),
+            line_buffer: Vec::new(),
+            buffer: BytesMut::new(),
             index: 0,
             is_empty: false,
         }
@@ -218,7 +221,7 @@ impl<R: BufRead> BufReadSource<R> {
 
     fn flil_buf(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
-            match self.reader.read_until(b'\n', &mut self.buffer) {
+            match self.reader.read_until(b'\n', &mut self.line_buffer) {
                 Ok(0) => self.is_empty = true,
                 Ok(_) => {}
                 Err(error) => {
@@ -226,6 +229,8 @@ impl<R: BufRead> BufReadSource<R> {
                     return Err(error);
                 }
             }
+            self.buffer.extend_from_slice(&self.line_buffer);
+            self.line_buffer.clear();
         }
         Ok(())
     }
@@ -233,7 +238,7 @@ impl<R: BufRead> BufReadSource<R> {
 
 impl<R: BufRead> Source for BufReadSource<R> {
     type Char = char;
-    type String = String;
+    type String = Bytes;
     type Error = io::Error;
 
     fn next_index(&self) -> usize {
@@ -247,8 +252,8 @@ impl<R: BufRead> Source for BufReadSource<R> {
     fn advance_while(
         &mut self,
         mut predicate: impl FnMut(char) -> bool,
-    ) -> Result<String, io::Error> {
-        let mut token = String::new();
+    ) -> Result<Self::String, io::Error> {
+        let mut token = self.buffer.split_to(0);
         while !self.is_empty {
             self.flil_buf()?;
             let buffer = &self.buffer;
@@ -259,20 +264,17 @@ impl<R: BufRead> Source for BufReadSource<R> {
                 .next()
                 .unwrap_or(buffer.len());
             self.index += offset;
-            let mut s = self.buffer.split_off(offset);
-            std::mem::swap(&mut s, &mut self.buffer);
-            let s =
-                String::from_utf8(s).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            if token.is_empty() {
-                token = s;
-            } else {
-                token.push_str(&s);
+            let s = self.buffer.split_to(offset);
+
+            if let Err(e) = std::str::from_utf8(&s) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
             }
+            token.unsplit(s);
             if !self.buffer.is_empty() {
                 break;
             }
         }
-        Ok(token)
+        Ok(token.freeze())
     }
 }
 
@@ -506,6 +508,7 @@ fn is_other_continuation_char(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use test_case::test_case;
 
     use super::{BufReadSource, NumberKind, SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
@@ -570,7 +573,11 @@ mod tests {
             .collect::<Vec<Result<_, _>>>();
         assert_eq!(
             tokens,
-            &[Ok("abc".to_owned()), Err(()), Ok("def".to_owned())]
+            &[
+                Ok(Bytes::from_static("abc".as_bytes())),
+                Err(()),
+                Ok(Bytes::from_static("def".as_bytes()))
+            ]
         );
     }
 }
