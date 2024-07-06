@@ -42,6 +42,17 @@ pub enum CharSetResult<T, E> {
     Err(E),
 }
 
+impl<T, E> CharSetResult<T, E> {
+    pub fn map_into<U: From<T>, F: From<E>>(self) -> CharSetResult<U, F> {
+        match self {
+            CharSetResult::Continue => CharSetResult::Continue,
+            CharSetResult::Done(Some(val)) => CharSetResult::Done(Some(val.into())),
+            CharSetResult::Done(None) => CharSetResult::Done(None),
+            CharSetResult::Err(err) => CharSetResult::Err(err.into()),
+        }
+    }
+}
+
 pub trait CharSet<C>: Default {
     type TokenKind;
     type Error;
@@ -308,9 +319,10 @@ impl SimpleCharSet {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NumberState {
     /// The first digit of the integer part has been matched
+    #[default]
     Integer,
     /// The dot separating the integer and fractional parts has been matched
     Dot,
@@ -318,10 +330,22 @@ pub enum NumberState {
     Fractional,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NumberKind {
+    Integer,
+    Float,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SimpleCharSetError {
     #[error("unterminated string")]
     UnterminatedString,
+}
+
+impl From<Infallible> for SimpleCharSetError {
+    fn from(err: Infallible) -> Self {
+        match err {}
+    }
 }
 
 impl CharSet<char> for SimpleCharSet {
@@ -337,7 +361,7 @@ impl CharSet<char> for SimpleCharSet {
             (Self::Number(mut state), ch) => {
                 let res = state.next_char(ch);
                 *self = Self::Number(state);
-                res
+                res.map_into()
             }
             (Self::Identifier, ch) if is_ident_char(ch) => CharSetResult::Continue,
             (Self::String(false), '"') => {
@@ -375,7 +399,10 @@ impl CharSet<char> for SimpleCharSet {
     fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error> {
         match self {
             Self::None => Ok(None),
-            Self::Number(state) => state.end_of_input(),
+            Self::Number(state) => state
+                .end_of_input()
+                .map(|opt| opt.map(Into::into))
+                .map_err(Into::into),
             Self::Identifier | Self::Singleton | Self::Comparison | Self::Dot | Self::Other => {
                 Ok(Some(SimpleCharSetTokenKind::Tag))
             }
@@ -386,8 +413,11 @@ impl CharSet<char> for SimpleCharSet {
     }
 }
 
-impl NumberState {
-    fn next_char(&mut self, ch: char) -> CharSetResult<SimpleCharSetTokenKind, SimpleCharSetError> {
+impl CharSet<char> for NumberState {
+    type TokenKind = NumberKind;
+    type Error = Infallible;
+
+    fn next_char(&mut self, ch: char) -> CharSetResult<Self::TokenKind, Self::Error> {
         match (*self, ch) {
             (Self::Integer, '.') => {
                 *self = Self::Dot;
@@ -398,17 +428,15 @@ impl NumberState {
                 CharSetResult::Continue
             }
             (Self::Integer | Self::Fractional, ch) if is_number_char(ch) => CharSetResult::Continue,
-            (Self::Integer, _) => CharSetResult::Done(Some(SimpleCharSetTokenKind::Integer)),
-            (Self::Dot | Self::Fractional, _) => {
-                CharSetResult::Done(Some(SimpleCharSetTokenKind::Float))
-            }
+            (Self::Integer, _) => CharSetResult::Done(Some(NumberKind::Integer)),
+            (Self::Dot | Self::Fractional, _) => CharSetResult::Done(Some(NumberKind::Float)),
         }
     }
 
-    fn end_of_input(self) -> Result<Option<SimpleCharSetTokenKind>, SimpleCharSetError> {
+    fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error> {
         match self {
-            Self::Integer => Ok(Some(SimpleCharSetTokenKind::Integer)),
-            Self::Dot | Self::Fractional => Ok(Some(SimpleCharSetTokenKind::Float)),
+            Self::Integer => Ok(Some(NumberKind::Integer)),
+            Self::Dot | Self::Fractional => Ok(Some(NumberKind::Float)),
         }
     }
 }
@@ -428,9 +456,14 @@ impl<T: fmt::Display> fmt::Display for Token<T> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimpleCharSetTokenKind {
     Tag,
-    Integer,
-    Float,
+    Number(NumberKind),
     String,
+}
+
+impl From<NumberKind> for SimpleCharSetTokenKind {
+    fn from(number: NumberKind) -> Self {
+        Self::Number(number)
+    }
 }
 
 #[inline]
@@ -475,7 +508,7 @@ fn is_other_continuation_char(ch: char) -> bool {
 mod tests {
     use test_case::test_case;
 
-    use super::{BufReadSource, SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
+    use super::{BufReadSource, NumberKind, SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
 
     #[test_case("abc", SimpleCharSetTokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", SimpleCharSetTokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
@@ -487,13 +520,13 @@ mod tests {
     #[test_case("-=", SimpleCharSetTokenKind::Tag, "-=" ; "other char followed by comparison")]
     #[test_case("..", SimpleCharSetTokenKind::Tag, ".." ; "tag starting with dot")]
     #[test_case("..123", SimpleCharSetTokenKind::Tag, ".." ; "tag starting with dot followed by number")]
-    #[test_case("123", SimpleCharSetTokenKind::Integer, "123" ; "integer")]
-    #[test_case("1_234", SimpleCharSetTokenKind::Integer, "1_234" ; "integer with underscores")]
-    #[test_case("1.234", SimpleCharSetTokenKind::Float, "1.234" ; "simple float")]
-    #[test_case(".234", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer")]
-    #[test_case("1.", SimpleCharSetTokenKind::Float, "1." ; "integer followed by dot")]
-    #[test_case("1.234.5", SimpleCharSetTokenKind::Float, "1.234" ; "float with extra dot")]
-    #[test_case(".234.5", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer and extra dot")]
+    #[test_case("123", SimpleCharSetTokenKind::Number(NumberKind::Integer), "123" ; "integer")]
+    #[test_case("1_234", SimpleCharSetTokenKind::Number(NumberKind::Integer), "1_234" ; "integer with underscoreNumberKind")]
+    #[test_case("1.234", SimpleCharSetTokenKind::Number(NumberKind::Float), "1.234" ; "simple float")]
+    #[test_case(".234", SimpleCharSetTokenKind::Number(NumberKind::Float), ".234" ; "float with no integer")]
+    #[test_case("1.", SimpleCharSetTokenKind::Number(NumberKind::Float), "1." ; "integer followed by dot")]
+    #[test_case("1.234.5", SimpleCharSetTokenKind::Number(NumberKind::Float), "1.234" ; "float with extra dot")]
+    #[test_case(".234.5", SimpleCharSetTokenKind::Number(NumberKind::Float), ".234" ; "float with no integer and extra dot")]
     #[test_case(r#""abc\"\\\"\\""#, SimpleCharSetTokenKind::String, r#""abc\"\\\"\\""# ; "string")]
     #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
