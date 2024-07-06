@@ -29,7 +29,7 @@ impl<T: Tokenizer> Tokenizer for &mut T {
 
 /// A tokenizer which tokenizes characters by grouping them into sets.
 pub struct CharSetTokenizer<S, C> {
-    source: S,
+    pub source: S,
     _marker: PhantomData<fn() -> C>,
 }
 
