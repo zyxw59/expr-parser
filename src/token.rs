@@ -28,6 +28,19 @@ impl<T: Tokenizer> Tokenizer for &mut T {
     }
 }
 
+pub struct IterTokenizer<I>(pub I);
+impl<I, T, E> Tokenizer for IterTokenizer<I>
+where
+    I: Iterator<Item = Result<Token<T>, E>>,
+{
+    type Token = T;
+    type Error = E;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+        self.0.next()
+    }
+}
+
 /// A tokenizer which tokenizes characters by grouping them into sets.
 pub struct CharSetTokenizer<S, C> {
     pub source: S,
