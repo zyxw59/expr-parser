@@ -421,6 +421,42 @@ pub trait Parser<T> {
     type Error;
 
     fn parse_token(&self, kind: T) -> Result<ParserElement<Self, T>, Self::Error>;
+
+    fn parse<I>(
+        &self,
+        tokens: I,
+    ) -> Result<ExpressionQueue<Self, I>, ParseErrors<Self::Error, I::Error>>
+    where
+        I: Tokenizer<Token = T>,
+    {
+        parse(tokens, self)
+    }
+
+    fn parse_one_term<I>(
+        &self,
+        tokens: I,
+    ) -> Result<ExpressionQueue<Self, I>, ParseErrors<Self::Error, I::Error>>
+    where
+        I: Tokenizer<Token = T>,
+    {
+        parse_one_term(tokens, self)
+    }
+}
+
+impl<'a, P, T> Parser<T> for &'a P
+where
+    P: Parser<T> + ?Sized,
+{
+    type Precedence = P::Precedence;
+    type Delimiter = P::Delimiter;
+    type BinaryOperator = P::BinaryOperator;
+    type UnaryOperator = P::UnaryOperator;
+    type Term = P::Term;
+    type Error = P::Error;
+
+    fn parse_token(&self, kind: T) -> Result<ParserElement<Self, T>, Self::Error> {
+        P::parse_token(self, kind)
+    }
 }
 
 pub trait Delimiter {
