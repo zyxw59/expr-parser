@@ -10,7 +10,11 @@ pub struct ParseErrors<P, T, Idx = usize> {
 impl<P, T, Idx> ParseErrors<P, T, Idx> {
     pub fn map_spans<Idx2>(self, mut f: impl FnMut(Idx) -> Idx2) -> ParseErrors<P, T, Idx2> {
         ParseErrors {
-            errors: self.errors.into_iter().map(|err| err.map_span(&mut f)).collect(),
+            errors: self
+                .errors
+                .into_iter()
+                .map(|err| err.map_span(&mut f))
+                .collect(),
         }
     }
 }
@@ -46,7 +50,7 @@ impl<P, T, Idx> ParseError<P, T, Idx> {
     pub fn map_span<Idx2>(self, f: impl FnMut(Idx) -> Idx2) -> ParseError<P, T, Idx2> {
         ParseError {
             span: self.span.map(f),
-            kind: self.kind
+            kind: self.kind,
         }
     }
 }

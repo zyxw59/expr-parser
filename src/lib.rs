@@ -8,7 +8,7 @@ pub mod parser;
 pub mod token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Span<T=usize> {
+pub struct Span<T = usize> {
     pub start: T,
     pub end: T,
 }
@@ -22,7 +22,10 @@ impl<T> Span<T> {
     }
 
     /// Creates a new span encompassing both input spans.
-    pub fn join(self, other: Self) -> Self where T: Ord {
+    pub fn join(self, other: Self) -> Self
+    where
+        T: Ord,
+    {
         Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
