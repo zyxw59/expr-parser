@@ -3,11 +3,19 @@ use std::fmt;
 use crate::Span;
 
 #[derive(Clone, Debug, thiserror::Error)]
-pub struct ParseErrors<P, T> {
-    pub errors: Vec<ParseError<P, T>>,
+pub struct ParseErrors<P, T, Idx = usize> {
+    pub errors: Vec<ParseError<P, T, Idx>>,
 }
 
-impl<P: fmt::Display, T: fmt::Display> fmt::Display for ParseErrors<P, T> {
+impl<P, T, Idx> ParseErrors<P, T, Idx> {
+    pub fn map_spans<Idx2>(self, mut f: impl FnMut(Idx) -> Idx2) -> ParseErrors<P, T, Idx2> {
+        ParseErrors {
+            errors: self.errors.into_iter().map(|err| err.map_span(&mut f)).collect(),
+        }
+    }
+}
+
+impl<P: fmt::Display, T: fmt::Display, Idx: fmt::Display> fmt::Display for ParseErrors<P, T, Idx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.errors.len() == 1 {
             f.write_str("Encountered 1 error:\n")?;
@@ -29,9 +37,18 @@ impl<P, T> From<Vec<ParseError<P, T>>> for ParseErrors<P, T> {
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("Parse error at {span}: {kind}")]
-pub struct ParseError<P, T> {
-    pub span: Span,
+pub struct ParseError<P, T, Idx = usize> {
+    pub span: Span<Idx>,
     pub kind: ParseErrorKind<P, T>,
+}
+
+impl<P, T, Idx> ParseError<P, T, Idx> {
+    pub fn map_span<Idx2>(self, f: impl FnMut(Idx) -> Idx2) -> ParseError<P, T, Idx2> {
+        ParseError {
+            span: self.span.map(f),
+            kind: self.kind
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

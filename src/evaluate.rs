@@ -165,7 +165,7 @@ mod tests {
         expression: [ExpressionKind<BinaryOperator, UnaryOperator, Term>; N],
         result: Result<Term, Error>,
     ) {
-        const EMPTY_SPAN: Span = Span::new(0..0);
+        const EMPTY_SPAN: Span = Span { start: 0, end: 0 };
         let actual = PureEvaluator.evaluate(expression.into_iter().map(|kind| Expression {
             kind,
             span: EMPTY_SPAN,

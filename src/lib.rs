@@ -8,13 +8,13 @@ pub mod parser;
 pub mod token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
+pub struct Span<T=usize> {
+    pub start: T,
+    pub end: T,
 }
 
-impl Span {
-    pub const fn new(range: Range<usize>) -> Self {
+impl<T> Span<T> {
+    pub fn new(range: Range<T>) -> Self {
         Self {
             start: range.start,
             end: range.end,
@@ -22,31 +22,38 @@ impl Span {
     }
 
     /// Creates a new span encompassing both input spans.
-    pub fn join(self, other: Self) -> Self {
+    pub fn join(self, other: Self) -> Self where T: Ord {
         Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         }
     }
 
-    pub fn into_range(self) -> Range<usize> {
+    pub fn into_range(self) -> Range<T> {
         self.into()
+    }
+
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Span<U> {
+        Span {
+            start: f(self.start),
+            end: f(self.end),
+        }
     }
 }
 
-impl From<Span> for Range<usize> {
-    fn from(span: Span) -> Self {
+impl<T> From<Span<T>> for Range<T> {
+    fn from(span: Span<T>) -> Self {
         span.start..span.end
     }
 }
 
-impl From<Range<usize>> for Span {
-    fn from(range: Range<usize>) -> Self {
+impl<T> From<Range<T>> for Span<T> {
+    fn from(range: Range<T>) -> Self {
         Self::new(range)
     }
 }
 
-impl fmt::Display for Span {
+impl<T: fmt::Display> fmt::Display for Span<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}..{}", self.start, self.end)
     }
