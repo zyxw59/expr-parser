@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::VecDeque};
+use std::borrow::Cow;
 
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
@@ -33,7 +33,7 @@ where
     ParseHelper::new(tokens, parser).parse_one_term()
 }
 
-pub type ExpressionQueue<P, T> = VecDeque<
+pub type ExpressionQueue<P, T> = Vec<
     Expression<
         <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
         <P as Parser<<T as Tokenizer>::Token>>::UnaryOperator,
@@ -57,7 +57,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
             parser,
             state: State::PostOperator,
             stack: Stack::new(),
-            queue: VecDeque::new(),
+            queue: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -130,7 +130,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.push_back(Expression {
+                    self.queue.push(Expression {
                         kind,
                         span: el.span,
                     });
@@ -155,7 +155,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         }
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push_back(Expression {
+                self.queue.push(Expression {
                     kind,
                     span: el.span,
                 });
@@ -231,7 +231,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
             }
             Prefix::Term { term } => {
                 self.state = State::PostTerm;
-                self.queue.push_back(Expression {
+                self.queue.push(Expression {
                     span,
                     kind: ExpressionKind::Term(term),
                 });
@@ -240,7 +240,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                 self.state = State::PostTerm;
                 if let Some(el) = self.stack.pop() {
                     if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                        self.queue.push_back(Expression {
+                        self.queue.push(Expression {
                             kind,
                             span: el.span,
                         });
@@ -316,7 +316,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.push_back(Expression {
+                    self.queue.push(Expression {
                         kind,
                         span: el.span,
                     });
@@ -338,7 +338,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         self.state = State::PostTerm;
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push_back(Expression {
+                self.queue.push(Expression {
                     kind,
                     span: el.span,
                 });
@@ -394,7 +394,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
         self.pop_while_lower_precedence(&fixity);
-        self.queue.push_back(Expression {
+        self.queue.push(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
         });
@@ -403,7 +403,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push_back(Expression {
+                self.queue.push(Expression {
                     kind,
                     span: el.span,
                 });
