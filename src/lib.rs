@@ -7,7 +7,7 @@ pub mod operator;
 pub mod parser;
 pub mod token;
 
-pub use error::{ParseErrors, ParseError, ParseErrorKind};
+pub use error::{ParseError, ParseErrorKind, ParseErrors};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Span<T> {
