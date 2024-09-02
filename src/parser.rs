@@ -1,7 +1,5 @@
-use std::borrow::Cow;
-
 use crate::{
-    error::{ParseError, ParseErrorKind, ParseErrorsFor, ParseFloatError, ParseIntError},
+    error::{ParseError, ParseErrorKind, ParseErrorsFor},
     expression::{Expression, ExpressionKind},
     operator::Fixity,
     token::{Token, Tokenizer},
@@ -623,35 +621,6 @@ impl<B, U, T> StackOperator<B, U, T> {
             Self::Binary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
         }
     }
-}
-
-fn parse_integer(s: &str) -> Result<i64, ParseIntError> {
-    if s.is_empty() {
-        return Err(ParseIntError::Empty);
-    }
-    let mut x: i64 = 0;
-    for c in s.chars() {
-        if let Some(digit) = c.to_digit(10) {
-            x = x
-                .checked_mul(10)
-                .and_then(|x| x.checked_add(digit as i64))
-                .ok_or(ParseIntError::Overflow)?;
-        }
-    }
-    Ok(x)
-}
-
-fn parse_float(s: &str) -> Result<f64, ParseFloatError> {
-    let mut s = Cow::Borrowed(s);
-    if s.contains('_') {
-        // float parsing is really hard, and writing our own float parser to do this in a zero-copy
-        // way is not worth it.
-        s.to_mut().retain(|c| c != '_');
-    }
-    if s.is_empty() {
-        return Err(ParseFloatError::Empty);
-    }
-    s.parse().map_err(|_| ParseFloatError::Invalid)
 }
 
 #[cfg(test)]

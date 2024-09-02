@@ -77,19 +77,3 @@ impl<P, T, Idx> ParseErrorKind<P, T, Idx> {
         }
     }
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ParseIntError {
-    #[error("Empty string")]
-    Empty,
-    #[error("Integer literal too large")]
-    Overflow,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ParseFloatError {
-    #[error("Empty string")]
-    Empty,
-    #[error("Invalid float literal")]
-    Invalid,
-}
