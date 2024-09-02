@@ -1,23 +1,17 @@
 use std::fmt;
 
-use crate::Span;
+use crate::{parser::Parser, token::Tokenizer, Span};
 
 #[derive(Clone, Debug, thiserror::Error)]
-pub struct ParseErrors<P, T, Idx = usize> {
+pub struct ParseErrors<P, T, Idx> {
     pub errors: Vec<ParseError<P, T, Idx>>,
 }
 
-impl<P, T, Idx> ParseErrors<P, T, Idx> {
-    pub fn map_spans<Idx2>(self, mut f: impl FnMut(Idx) -> Idx2) -> ParseErrors<P, T, Idx2> {
-        ParseErrors {
-            errors: self
-                .errors
-                .into_iter()
-                .map(|err| err.map_span(&mut f))
-                .collect(),
-        }
-    }
-}
+pub type ParseErrorsFor<P, T> = ParseErrors<
+    <P as Parser<<T as Tokenizer>::Token>>::Error,
+    <T as Tokenizer>::Error,
+    <T as Tokenizer>::Position,
+>;
 
 impl<P: fmt::Display, T: fmt::Display, Idx: fmt::Display> fmt::Display for ParseErrors<P, T, Idx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -33,36 +27,27 @@ impl<P: fmt::Display, T: fmt::Display, Idx: fmt::Display> fmt::Display for Parse
     }
 }
 
-impl<P, T> From<Vec<ParseError<P, T>>> for ParseErrors<P, T> {
-    fn from(errors: Vec<ParseError<P, T>>) -> Self {
+impl<P, T, Idx> From<Vec<ParseError<P, T, Idx>>> for ParseErrors<P, T, Idx> {
+    fn from(errors: Vec<ParseError<P, T, Idx>>) -> Self {
         ParseErrors { errors }
     }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("Parse error at {span}: {kind}")]
-pub struct ParseError<P, T, Idx = usize> {
+pub struct ParseError<P, T, Idx> {
     pub span: Span<Idx>,
-    pub kind: ParseErrorKind<P, T>,
-}
-
-impl<P, T, Idx> ParseError<P, T, Idx> {
-    pub fn map_span<Idx2>(self, f: impl FnMut(Idx) -> Idx2) -> ParseError<P, T, Idx2> {
-        ParseError {
-            span: self.span.map(f),
-            kind: self.kind,
-        }
-    }
+    pub kind: ParseErrorKind<P, T, Idx>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ParseErrorKind<P, T> {
+pub enum ParseErrorKind<P, T, Idx> {
     #[error("Unexpected end of input (expected {expected})")]
     EndOfInput { expected: &'static str },
     #[error("Unexpected token (expected {expected})")]
     UnexpectedToken { expected: &'static str },
     #[error("Mismatched closing delimiter (opening {opening})")]
-    MismatchedDelimiter { opening: Span },
+    MismatchedDelimiter { opening: Span<Idx> },
     #[error("Unmatched closing delimiter")]
     UnmatchedRightDelimiter,
     #[error("Unmatched opening delimiter")]
@@ -73,9 +58,12 @@ pub enum ParseErrorKind<P, T> {
     Tokenizer(T),
 }
 
-impl<P, T> ParseErrorKind<P, T> {
+impl<P, T, Idx> ParseErrorKind<P, T, Idx> {
     #[cfg(test)]
-    pub(crate) fn map_tokenizer_error<U>(self, f: impl FnOnce(T) -> U) -> ParseErrorKind<P, U> {
+    pub(crate) fn map_tokenizer_error<U>(
+        self,
+        f: impl FnOnce(T) -> U,
+    ) -> ParseErrorKind<P, U, Idx> {
         match self {
             Self::EndOfInput { expected } => ParseErrorKind::EndOfInput { expected },
             Self::UnexpectedToken { expected } => ParseErrorKind::UnexpectedToken { expected },

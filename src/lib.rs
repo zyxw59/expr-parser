@@ -8,7 +8,7 @@ pub mod parser;
 pub mod token;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Span<T = usize> {
+pub struct Span<T> {
     pub start: T,
     pub end: T,
 }

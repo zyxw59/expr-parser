@@ -14,29 +14,33 @@ use crate::Span;
 
 pub trait Tokenizer {
     type Token;
+    type Position: Clone + Default;
     type Error;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>>;
+    fn next_token(&mut self) -> Option<Result<TokenFor<Self>, Self::Error>>;
 }
 
 impl<T: Tokenizer> Tokenizer for &mut T {
     type Token = T::Token;
+    type Position = T::Position;
     type Error = T::Error;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+    fn next_token(&mut self) -> Option<Result<TokenFor<Self>, Self::Error>> {
         T::next_token(self)
     }
 }
 
 pub struct IterTokenizer<I>(pub I);
-impl<I, T, E> Tokenizer for IterTokenizer<I>
+impl<I, T, Idx, E> Tokenizer for IterTokenizer<I>
 where
-    I: Iterator<Item = Result<Token<T>, E>>,
+    I: Iterator<Item = Result<Token<T, Idx>, E>>,
+    Idx: Clone + Default,
 {
     type Token = T;
+    type Position = Idx;
     type Error = E;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token, Self::Position>, Self::Error>> {
         self.0.next()
     }
 }
@@ -120,9 +124,10 @@ impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
 
 impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
     type Token = CharSetToken<S, C>;
+    type Position = usize;
     type Error = CharSetError<S, C>;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token, Self::Position>, Self::Error>> {
         while !self.source.is_empty() {
             let start = self.source.next_index();
             match self.advance_while() {
@@ -142,7 +147,7 @@ impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
 }
 
 impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
-    type Item = Result<Token<<Self as Tokenizer>::Token>, <Self as Tokenizer>::Error>;
+    type Item = Result<Token<<Self as Tokenizer>::Token, usize>, <Self as Tokenizer>::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
@@ -457,12 +462,14 @@ impl CharSet<char> for NumberState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Token<T> {
-    pub span: Span,
+pub struct Token<T, Idx> {
+    pub span: Span<Idx>,
     pub kind: T,
 }
 
-impl<T: fmt::Display> fmt::Display for Token<T> {
+pub type TokenFor<T> = Token<<T as Tokenizer>::Token, <T as Tokenizer>::Position>;
+
+impl<T: fmt::Display, Idx: fmt::Display> fmt::Display for Token<T, Idx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.kind, f)
     }

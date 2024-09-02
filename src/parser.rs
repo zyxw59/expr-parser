@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::{
-    error::{ParseError, ParseErrorKind, ParseErrors, ParseFloatError, ParseIntError},
+    error::{ParseError, ParseErrorKind, ParseErrorsFor, ParseFloatError, ParseIntError},
     expression::{Expression, ExpressionKind},
     operator::Fixity,
     token::{Token, Tokenizer},
@@ -11,10 +11,7 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<T, P>(
-    tokens: T,
-    parser: P,
-) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>>
+pub fn parse<T, P>(tokens: T, parser: P) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
@@ -25,7 +22,7 @@ where
 pub fn parse_one_term<T, P>(
     tokens: T,
     parser: P,
-) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>>
+) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
@@ -35,6 +32,7 @@ where
 
 pub type ExpressionQueue<P, T> = Vec<
     Expression<
+        <T as Tokenizer>::Position,
         <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
         <P as Parser<<T as Tokenizer>::Token>>::UnaryOperator,
         <P as Parser<<T as Tokenizer>::Token>>::Term,
@@ -47,7 +45,7 @@ struct ParseHelper<T: Tokenizer, P: Parser<T::Token>> {
     state: State,
     stack: ParserStack<P, T>,
     queue: ExpressionQueue<P, T>,
-    errors: Vec<ParseError<P::Error, T::Error>>,
+    errors: Vec<ParseError<P::Error, T::Error, T::Position>>,
 }
 
 impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
@@ -63,8 +61,8 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     }
 
     /// Parses until the end of input
-    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
-        let mut end_of_input = 0;
+    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
+        let mut end_of_input = Default::default();
         while let Some(token) = self.tokenizer.next_token() {
             self.handle_token_result(token, &mut end_of_input);
         }
@@ -75,8 +73,8 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     ///
     /// This means zero or more prefix operators followed by either a term token or a delimited
     /// group.
-    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
-        let mut end_of_input = 0;
+    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
+        let mut end_of_input = Default::default();
         let mut delimiter_stack_index = None;
         while let Some(token) = self.tokenizer.next_token() {
             self.handle_token_result(token, &mut end_of_input);
@@ -105,19 +103,19 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
 
     fn handle_token_result(
         &mut self,
-        result: Result<Token<T::Token>, T::Error>,
-        end_of_input: &mut usize,
+        result: Result<Token<T::Token, T::Position>, T::Error>,
+        end_of_input: &mut T::Position,
     ) {
         match result {
             Err(e) => self.errors.push(ParseError {
                 span: Span {
-                    start: *end_of_input,
-                    end: *end_of_input,
+                    start: end_of_input.clone(),
+                    end: end_of_input.clone(),
                 },
                 kind: ParseErrorKind::Tokenizer(e),
             }),
             Ok(token) => {
-                *end_of_input = token.span.end;
+                *end_of_input = token.span.end.clone();
                 self.parse_next(token);
             }
         }
@@ -125,14 +123,14 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
 
     fn finish_parsing(
         mut self,
-        end_of_input: usize,
-    ) -> Result<ExpressionQueue<P, T>, ParseErrors<P::Error, T::Error>> {
+        end_of_input: T::Position,
+    ) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
                     self.queue.push(Expression {
                         kind,
-                        span: el.span,
+                        span: el.span.clone(),
                     });
                 } else {
                     self.errors.push(ParseError {
@@ -140,7 +138,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                             expected: EXPECT_TERM,
                         },
                         span: Span {
-                            start: end_of_input,
+                            start: end_of_input.clone(),
                             end: end_of_input,
                         },
                     })
@@ -157,7 +155,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
             if let Some(kind) = el.operator.expression_kind_rhs() {
                 self.queue.push(Expression {
                     kind,
-                    span: el.span,
+                    span: el.span.clone(),
                 });
             }
             if el.delimiter.is_some() {
@@ -174,7 +172,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         }
     }
 
-    fn parse_next(&mut self, token: Token<T::Token>) {
+    fn parse_next(&mut self, token: Token<T::Token, T::Position>) {
         match self.parser.parse_token(token.kind) {
             Ok(element) => match self.state {
                 State::PostOperator => self.parse_term(token.span, element),
@@ -195,7 +193,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         }
     }
 
-    fn parse_term(&mut self, span: Span, element: ParserElement<P, T::Token>) {
+    fn parse_term(&mut self, span: Span<T::Position>, element: ParserElement<P, T::Token>) {
         match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
@@ -249,7 +247,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                             kind: ParseErrorKind::UnexpectedToken {
                                 expected: EXPECT_TERM,
                             },
-                            span,
+                            span: span.clone(),
                         });
                     };
                 }
@@ -258,7 +256,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         }
     }
 
-    fn parse_operator(&mut self, span: Span, element: ParserElement<P, T::Token>) {
+    fn parse_operator(&mut self, span: Span<T::Position>, element: ParserElement<P, T::Token>) {
         match element.postfix {
             Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(span, delimiter),
             Postfix::BinaryOperator {
@@ -308,7 +306,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         }
     }
 
-    fn process_right_delimiter(&mut self, span: Span, right: P::Delimiter) {
+    fn process_right_delimiter(&mut self, span: Span<T::Position>, right: P::Delimiter) {
         // If we don't have a right-hand operand, demote the operator on the top of the stack
         // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
         // requires a right-hand operand), then push an error. We don't early return though, since
@@ -318,14 +316,14 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
                     self.queue.push(Expression {
                         kind,
-                        span: el.span,
+                        span: el.span.clone(),
                     });
                 } else {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::UnexpectedToken {
                             expected: EXPECT_TERM,
                         },
-                        span,
+                        span: span.clone(),
                     });
                 };
                 if let Some(left) = el.delimiter {
@@ -340,7 +338,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
             if let Some(kind) = el.operator.expression_kind_rhs() {
                 self.queue.push(Expression {
                     kind,
-                    span: el.span,
+                    span: el.span.clone(),
                 });
             }
             if let Some(left) = el.delimiter {
@@ -357,9 +355,9 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     fn check_delimiter_match(
         &mut self,
         left: P::Delimiter,
-        left_span: Span,
+        left_span: Span<T::Position>,
         right: P::Delimiter,
-        right_span: Span,
+        right_span: Span<T::Position>,
     ) {
         if !left.matches(&right) {
             self.errors.push(ParseError {
@@ -371,7 +369,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
 
     fn process_binary_operator(
         &mut self,
-        span: Span,
+        span: Span<T::Position>,
         fixity: Fixity<P::Precedence>,
         binary: P::BinaryOperator,
         unary: Option<P::UnaryOperator>,
@@ -387,7 +385,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
 
     fn process_postfix_operator(
         &mut self,
-        span: Span,
+        span: Span<T::Position>,
         precedence: P::Precedence,
         operator: P::UnaryOperator,
     ) {
@@ -422,10 +420,7 @@ pub trait Parser<T> {
 
     fn parse_token(&self, kind: T) -> Result<ParserElement<Self, T>, Self::Error>;
 
-    fn parse<I>(
-        &self,
-        tokens: I,
-    ) -> Result<ExpressionQueue<Self, I>, ParseErrors<Self::Error, I::Error>>
+    fn parse<I>(&self, tokens: I) -> Result<ExpressionQueue<Self, I>, ParseErrorsFor<Self, I>>
     where
         I: Tokenizer<Token = T>,
     {
@@ -435,7 +430,7 @@ pub trait Parser<T> {
     fn parse_one_term<I>(
         &self,
         tokens: I,
-    ) -> Result<ExpressionQueue<Self, I>, ParseErrors<Self::Error, I::Error>>
+    ) -> Result<ExpressionQueue<Self, I>, ParseErrorsFor<Self, I>>
     where
         I: Tokenizer<Token = T>,
     {
@@ -524,9 +519,10 @@ enum State {
 }
 
 #[derive(Clone, Debug)]
-struct Stack<P, D, B, U, T>(Vec<StackElement<P, D, B, U, T>>);
+struct Stack<Idx, P, D, B, U, T>(Vec<StackElement<Idx, P, D, B, U, T>>);
 
 type ParserStack<P, T> = Stack<
+    <T as Tokenizer>::Position,
     <P as Parser<<T as Tokenizer>::Token>>::Precedence,
     <P as Parser<<T as Tokenizer>::Token>>::Delimiter,
     <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
@@ -534,26 +530,26 @@ type ParserStack<P, T> = Stack<
     <P as Parser<<T as Tokenizer>::Token>>::Term,
 >;
 
-impl<P, D, B, U, T> Default for Stack<P, D, B, U, T> {
+impl<Idx, P, D, B, U, T> Default for Stack<Idx, P, D, B, U, T> {
     fn default() -> Self {
         Stack(Default::default())
     }
 }
 
-impl<P, D, B, U, T> Stack<P, D, B, U, T> {
+impl<Idx, P, D, B, U, T> Stack<Idx, P, D, B, U, T> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<P, D, B, U, T>) {
+    fn push(&mut self, element: StackElement<Idx, P, D, B, U, T>) {
         self.0.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<P, D, B, U, T>> {
+    fn pop(&mut self) -> Option<StackElement<Idx, P, D, B, U, T>> {
         self.0.pop()
     }
 
-    fn peek_top(&self) -> Option<&StackElement<P, D, B, U, T>> {
+    fn peek_top(&self) -> Option<&StackElement<Idx, P, D, B, U, T>> {
         self.0.last()
     }
 
@@ -562,7 +558,10 @@ impl<P, D, B, U, T> Stack<P, D, B, U, T> {
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
-    fn pop_if_lower_precedence(&mut self, fixity: &Fixity<P>) -> Option<StackElement<P, D, B, U, T>>
+    fn pop_if_lower_precedence(
+        &mut self,
+        fixity: &Fixity<P>,
+    ) -> Option<StackElement<Idx, P, D, B, U, T>>
     where
         P: Ord,
     {
@@ -582,14 +581,14 @@ impl<P, D, B, U, T> Stack<P, D, B, U, T> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct StackElement<P, D, B, U, T> {
-    span: Span,
+struct StackElement<Idx, P, D, B, U, T> {
+    span: Span<Idx>,
     precedence: Option<P>,
     delimiter: Option<D>,
     operator: StackOperator<B, U, T>,
 }
 
-impl<P, D, B, U, T> StackElement<P, D, B, U, T> {
+impl<Idx, P, D, B, U, T> StackElement<Idx, P, D, B, U, T> {
     fn precedence(&self) -> Option<&P> {
         self.precedence.as_ref()
     }
@@ -657,6 +656,8 @@ fn parse_float(s: &str) -> Result<f64, ParseFloatError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::type_complexity)]
+
     use std::{convert::Infallible, ops::Range};
 
     use test_case::test_case;
@@ -826,7 +827,7 @@ mod tests {
         }
     }
 
-    fn expr_to_str<'s>(expr: Expression<&'s str, &'s str, &'s str>) -> &'s str {
+    fn expr_to_str<'s, Idx>(expr: Expression<Idx, &'s str, &'s str, &'s str>) -> &'s str {
         match expr.kind {
             ExpressionKind::BinaryOperator(s) => s,
             ExpressionKind::UnaryOperator(s) => s,
@@ -907,7 +908,7 @@ mod tests {
     ] ; "extra operator" )]
     fn parse_expression_fail(
         input: &str,
-        expected: &[(ParseErrorKind<Infallible, Infallible>, Range<usize>)],
+        expected: &[(ParseErrorKind<Infallible, Infallible, usize>, Range<usize>)],
     ) {
         let actual = parse(
             SimpleTokenizer::new(StrSource::new(input)),

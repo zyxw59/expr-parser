@@ -1,13 +1,13 @@
 use crate::Span;
 
 #[derive(Clone, Copy, Debug, Eq)]
-pub struct Expression<B, U, T> {
+pub struct Expression<Idx, B, U, T> {
     pub kind: ExpressionKind<B, U, T>,
-    pub span: Span,
+    pub span: Span<Idx>,
 }
 
 /// Expression equality ignores the span
-impl<B: PartialEq, U: PartialEq, T: PartialEq> PartialEq for Expression<B, U, T> {
+impl<Idx, B: PartialEq, U: PartialEq, T: PartialEq> PartialEq for Expression<Idx, B, U, T> {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind
     }
