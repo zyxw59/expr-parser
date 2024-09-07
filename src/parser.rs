@@ -41,7 +41,7 @@ struct ParseHelper<T: Tokenizer, P: Parser<T::Token>> {
     tokenizer: T,
     parser: P,
     state: State,
-    stack: ParserStack<P, T>,
+    stack: Stack<P, T>,
     queue: ExpressionQueue<P, T>,
     errors: Vec<ParseError<P::Error, T::Error, T::Position>>,
 }
@@ -516,38 +516,28 @@ enum State {
     PostTerm,
 }
 
-#[derive(Clone, Debug)]
-struct Stack<Idx, P, D, B, U, T>(Vec<StackElement<Idx, P, D, B, U, T>>);
+struct Stack<P: Parser<T::Token>, T: Tokenizer>(Vec<StackElement<P, T>>);
 
-type ParserStack<P, T> = Stack<
-    <T as Tokenizer>::Position,
-    <P as Parser<<T as Tokenizer>::Token>>::Precedence,
-    <P as Parser<<T as Tokenizer>::Token>>::Delimiter,
-    <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
-    <P as Parser<<T as Tokenizer>::Token>>::UnaryOperator,
-    <P as Parser<<T as Tokenizer>::Token>>::Term,
->;
-
-impl<Idx, P, D, B, U, T> Default for Stack<Idx, P, D, B, U, T> {
+impl<P: Parser<T::Token>, T: Tokenizer> Default for Stack<P, T> {
     fn default() -> Self {
         Stack(Default::default())
     }
 }
 
-impl<Idx, P, D, B, U, T> Stack<Idx, P, D, B, U, T> {
+impl<P: Parser<T::Token>, T: Tokenizer> Stack<P, T> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<Idx, P, D, B, U, T>) {
+    fn push(&mut self, element: StackElement<P, T>) {
         self.0.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<Idx, P, D, B, U, T>> {
+    fn pop(&mut self) -> Option<StackElement<P, T>> {
         self.0.pop()
     }
 
-    fn peek_top(&self) -> Option<&StackElement<Idx, P, D, B, U, T>> {
+    fn peek_top(&self) -> Option<&StackElement<P, T>> {
         self.0.last()
     }
 
@@ -558,11 +548,8 @@ impl<Idx, P, D, B, U, T> Stack<Idx, P, D, B, U, T> {
     /// Pops the stack if the new operator has lower precedence than the top of the stack
     fn pop_if_lower_precedence(
         &mut self,
-        fixity: &Fixity<P>,
-    ) -> Option<StackElement<Idx, P, D, B, U, T>>
-    where
-        P: Ord,
-    {
+        fixity: &Fixity<P::Precedence>,
+    ) -> Option<StackElement<P, T>> {
         if match fixity {
             Fixity::Left(prec) => Some(prec) <= self.precedence(),
             Fixity::Right(prec) => Some(prec) < self.precedence(),
@@ -573,21 +560,20 @@ impl<Idx, P, D, B, U, T> Stack<Idx, P, D, B, U, T> {
         }
     }
 
-    fn precedence(&self) -> Option<&P> {
+    fn precedence(&self) -> Option<&P::Precedence> {
         self.0.last().and_then(StackElement::precedence)
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct StackElement<Idx, P, D, B, U, T> {
-    span: Span<Idx>,
-    precedence: Option<P>,
-    delimiter: Option<D>,
-    operator: StackOperator<B, U, T>,
+struct StackElement<P: Parser<T::Token>, T: Tokenizer> {
+    span: Span<T::Position>,
+    precedence: Option<P::Precedence>,
+    delimiter: Option<P::Delimiter>,
+    operator: StackOperator<P::BinaryOperator, P::UnaryOperator, P::Term>,
 }
 
-impl<Idx, P, D, B, U, T> StackElement<Idx, P, D, B, U, T> {
-    fn precedence(&self) -> Option<&P> {
+impl<P: Parser<T::Token>, T: Tokenizer> StackElement<P, T> {
+    fn precedence(&self) -> Option<&P::Precedence> {
         self.precedence.as_ref()
     }
 }
