@@ -41,7 +41,7 @@ struct ParseHelper<T: Tokenizer, P: Parser<T::Token>> {
     tokenizer: T,
     parser: P,
     state: State,
-    stack: Stack<P, T>,
+    stack: Stack<T, P>,
     queue: ExpressionQueue<P, T>,
     errors: Vec<ParseError<P::Error, T::Error, T::Position>>,
 }
@@ -77,7 +77,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         while let Some(token) = self.tokenizer.next_token() {
             self.handle_token_result(token, &mut end_of_input);
             if let Some(top) = self.stack.peek_top() {
-                if top.delimiter.is_some() {
+                if top.order.is_delimiter() {
                     delimiter_stack_index = Some(self.stack.len());
                     break;
                 }
@@ -141,7 +141,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                         },
                     })
                 }
-                if el.delimiter.is_some() {
+                if el.order.is_delimiter() {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::UnmatchedLeftDelimiter,
                         span: el.span,
@@ -156,7 +156,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                     span: el.span.clone(),
                 });
             }
-            if el.delimiter.is_some() {
+            if el.order.is_delimiter() {
                 self.errors.push(ParseError {
                     kind: ParseErrorKind::UnmatchedLeftDelimiter,
                     span: el.span,
@@ -200,8 +200,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
             } => {
                 self.stack.push(StackElement {
                     span,
-                    precedence: None,
-                    delimiter: Some(delimiter),
+                    order: StackOrder::Delimiter(delimiter),
                     operator: StackOperator::unary_delimiter(operator, empty),
                 });
                 self.state = State::PostOperator;
@@ -216,8 +215,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
             } => {
                 self.stack.push(StackElement {
                     span,
-                    precedence: Some(precedence),
-                    delimiter: None,
+                    order: StackOrder::Precedence(precedence),
                     operator: StackOperator::Unary {
                         unary: operator,
                         term: no_rhs,
@@ -283,8 +281,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                 // stack after the closing delimiter is matched
                 self.stack.push(StackElement {
                     span,
-                    precedence: None,
-                    delimiter: Some(delimiter),
+                    order: StackOrder::Delimiter(delimiter),
                     operator: StackOperator::Binary {
                         binary: operator,
                         unary: empty,
@@ -324,7 +321,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                         span: span.clone(),
                     });
                 };
-                if let Some(left) = el.delimiter {
+                if let StackOrder::Delimiter(left) = el.order {
                     self.state = State::PostTerm;
                     self.check_delimiter_match(left, el.span, right, span);
                     return;
@@ -339,7 +336,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                     span: el.span.clone(),
                 });
             }
-            if let Some(left) = el.delimiter {
+            if let StackOrder::Delimiter(left) = el.order {
                 self.check_delimiter_match(left, el.span, right, span);
                 return;
             }
@@ -375,8 +372,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         self.pop_while_lower_precedence(&fixity);
         self.stack.push(StackElement {
             span,
-            precedence: Some(fixity.into_precedence()),
-            delimiter: None,
+            order: StackOrder::Precedence(fixity.into_precedence()),
             operator: StackOperator::Binary { binary, unary },
         });
     }
@@ -516,28 +512,28 @@ enum State {
     PostTerm,
 }
 
-struct Stack<P: Parser<T::Token>, T: Tokenizer>(Vec<StackElement<P, T>>);
+struct Stack<T: Tokenizer, P: Parser<T::Token>>(Vec<StackElement<T, P>>);
 
-impl<P: Parser<T::Token>, T: Tokenizer> Default for Stack<P, T> {
+impl<T: Tokenizer, P: Parser<T::Token>> Default for Stack<T, P> {
     fn default() -> Self {
         Stack(Default::default())
     }
 }
 
-impl<P: Parser<T::Token>, T: Tokenizer> Stack<P, T> {
+impl<T: Tokenizer, P: Parser<T::Token>> Stack<T, P> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<P, T>) {
+    fn push(&mut self, element: StackElement<T, P>) {
         self.0.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<P, T>> {
+    fn pop(&mut self) -> Option<StackElement<T, P>> {
         self.0.pop()
     }
 
-    fn peek_top(&self) -> Option<&StackElement<P, T>> {
+    fn peek_top(&self) -> Option<&StackElement<T, P>> {
         self.0.last()
     }
 
@@ -549,7 +545,7 @@ impl<P: Parser<T::Token>, T: Tokenizer> Stack<P, T> {
     fn pop_if_lower_precedence(
         &mut self,
         fixity: &Fixity<P::Precedence>,
-    ) -> Option<StackElement<P, T>> {
+    ) -> Option<StackElement<T, P>> {
         if match fixity {
             Fixity::Left(prec) => Some(prec) <= self.precedence(),
             Fixity::Right(prec) => Some(prec) < self.precedence(),
@@ -565,16 +561,33 @@ impl<P: Parser<T::Token>, T: Tokenizer> Stack<P, T> {
     }
 }
 
-struct StackElement<P: Parser<T::Token>, T: Tokenizer> {
+struct StackElement<T: Tokenizer, P: Parser<T::Token>> {
     span: Span<T::Position>,
-    precedence: Option<P::Precedence>,
-    delimiter: Option<P::Delimiter>,
+    order: StackOrder<P::Precedence, P::Delimiter>,
     operator: StackOperator<P::BinaryOperator, P::UnaryOperator, P::Term>,
 }
 
-impl<P: Parser<T::Token>, T: Tokenizer> StackElement<P, T> {
+impl<T: Tokenizer, P: Parser<T::Token>> StackElement<T, P> {
     fn precedence(&self) -> Option<&P::Precedence> {
-        self.precedence.as_ref()
+        self.order.precedence()
+    }
+}
+
+enum StackOrder<P, D> {
+    Precedence(P),
+    Delimiter(D),
+}
+
+impl<P, D> StackOrder<P, D> {
+    fn precedence(&self) -> Option<&P> {
+        match self {
+            Self::Precedence(p) => Some(p),
+            Self::Delimiter(_) => None,
+        }
+    }
+
+    fn is_delimiter(&self) -> bool {
+        matches!(self, Self::Delimiter(_))
     }
 }
 
