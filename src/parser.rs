@@ -115,7 +115,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         mut self,
         backstop: Backstop<T::Position, P::Precedence, P::Delimiter>,
     ) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
-        self.stack.push(StackElement {
+        self.stack.backstop = Some(StackElement {
             span: backstop.span,
             kind: backstop.kind,
             operator: StackOperator::None { term: None },
@@ -123,7 +123,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         let mut end_of_input = Default::default();
         while let Some(token) = self.tokenizer.next_token() {
             self.handle_token_result(token, &mut end_of_input);
-            if self.stack.0.is_empty() {
+            if self.stack.backstop.is_none() {
                 break;
             }
         }
@@ -400,7 +400,10 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
         binary: P::BinaryOperator,
         unary: Option<P::UnaryOperator>,
     ) {
-        self.pop_while_lower_precedence(&fixity);
+        if self.pop_while_lower_precedence(&fixity) {
+            // backstop was hit
+            return;
+        }
         self.stack.push(StackElement {
             span,
             kind: BackstopKind::Precedence(fixity.into_precedence()),
@@ -416,14 +419,19 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
     ) {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
-        self.pop_while_lower_precedence(&fixity);
+        if self.pop_while_lower_precedence(&fixity) {
+            // backstop was hit
+            return;
+        }
         self.queue.push(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
         });
     }
 
-    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
+    // returns whether the backstop was popped
+    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) -> bool {
+        let has_backstop = self.stack.backstop.is_some();
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
                 self.queue.push(Expression {
@@ -432,6 +440,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
                 });
             }
         }
+        has_backstop && self.stack.backstop.is_none()
     }
 }
 
@@ -577,11 +586,17 @@ enum State {
     PostTerm,
 }
 
-struct Stack<T: Tokenizer, P: Parser<T::Token>>(Vec<StackElement<T, P>>);
+struct Stack<T: Tokenizer, P: Parser<T::Token>> {
+    stack: Vec<StackElement<T, P>>,
+    backstop: Option<StackElement<T, P>>,
+}
 
 impl<T: Tokenizer, P: Parser<T::Token>> Default for Stack<T, P> {
     fn default() -> Self {
-        Stack(Default::default())
+        Stack {
+            stack: Default::default(),
+            backstop: None,
+        }
     }
 }
 
@@ -591,19 +606,19 @@ impl<T: Tokenizer, P: Parser<T::Token>> Stack<T, P> {
     }
 
     fn push(&mut self, element: StackElement<T, P>) {
-        self.0.push(element);
+        self.stack.push(element);
     }
 
     fn pop(&mut self) -> Option<StackElement<T, P>> {
-        self.0.pop()
+        self.stack.pop().or_else(|| self.backstop.take())
     }
 
     fn peek_top(&self) -> Option<&StackElement<T, P>> {
-        self.0.last()
+        self.stack.last().or(self.backstop.as_ref())
     }
 
     fn len(&self) -> usize {
-        self.0.len()
+        self.stack.len()
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
@@ -622,7 +637,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> Stack<T, P> {
     }
 
     fn precedence(&self) -> Option<&P::Precedence> {
-        self.0.last().and_then(StackElement::precedence)
+        self.peek_top().and_then(StackElement::precedence)
     }
 }
 
@@ -678,8 +693,8 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        parse, parse_one_term, Delimiter, Element, Parser, Postfix, Prefix, EXPECT_OPERATOR,
-        EXPECT_TERM,
+        parse, parse_one_term, parse_with_backstop, Backstop, BackstopKind, Delimiter, Element,
+        Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM,
     };
     use crate::{
         error::ParseErrorKind,
@@ -885,6 +900,36 @@ mod tests {
     fn parse_one(input: &str, output: &str, rest: &str) -> anyhow::Result<()> {
         let mut tokens = SimpleTokenizer::new(StrSource::new(input));
         let actual = parse_one_term(&mut tokens, SimpleExprContext)?
+            .into_iter()
+            .map(expr_to_str)
+            .collect::<Vec<_>>();
+        let expected = output.split_whitespace().collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        let actual_rest = tokens
+            .map(|res| res.map(|tok| tok.kind))
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected_rest = SimpleTokenizer::new(StrSource::new(rest))
+            .map(|res| res.map(|tok| tok.kind))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(actual_rest, expected_rest);
+        Ok(())
+    }
+
+    #[test_case("1 * (3 + 4)) rest", BackstopKind::Delimiter(SimpleDelimiter::Paren), "1 3 4 + *", "rest" ; "delimited")]
+    #[test_case("1 * (3, 4), rest", BackstopKind::Precedence(SimplePrecedence::Comma), "1 3 4 , *", "rest" ; "precedence")]
+    #[test_case("1 * 3 + 4", BackstopKind::Precedence(SimplePrecedence::Additive), "1 3 *", "4" ; "precedence without rhs")]
+    fn parse_backstop(
+        input: &str,
+        backstop: BackstopKind<SimplePrecedence, SimpleDelimiter>,
+        output: &str,
+        rest: &str,
+    ) -> anyhow::Result<()> {
+        let mut tokens = SimpleTokenizer::new(StrSource::new(input));
+        let backstop = Backstop {
+            kind: backstop,
+            span: Default::default(),
+        };
+        let actual = parse_with_backstop(&mut tokens, SimpleExprContext, backstop)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
