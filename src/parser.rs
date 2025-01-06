@@ -1,5 +1,5 @@
 use crate::{
-    error::{ParseError, ParseErrorKind, ParseErrorsFor},
+    error::{ParseError, ParseErrorKind, ParseErrors, ParseErrorsFor},
     expression::{Expression, ExpressionKind},
     operator::Fixity,
     token::{Token, Tokenizer},
@@ -9,38 +9,85 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<T, P>(tokens: T, parser: P) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>>
+pub fn parse<T, P>(
+    mut tokenizer: T,
+    parser: P,
+) -> Result<ExpressionQueueFor<P, T>, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
 {
-    ParseHelper::new(tokens, parser).parse_all()
+    let mut state = ParseState::new(parser);
+    while let Some(token) = tokenizer.next_token() {
+        state.parse_result(token);
+    }
+    state.finish()
 }
 
 pub fn parse_with_backstop<T, P>(
-    tokens: T,
+    mut tokenizer: T,
     parser: P,
     backstop: Backstop<T::Position, P::Precedence, P::Delimiter>,
-) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>>
+) -> Result<ExpressionQueueFor<P, T>, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
 {
-    ParseHelper::new(tokens, parser).parse_with_backstop(backstop)
+    let mut state = ParseState::new(parser);
+    state.stack.backstop = Some(StackElement {
+        span: backstop.span,
+        kind: backstop.kind,
+        operator: StackOperator::None { term: None },
+    });
+    while let Some(token) = tokenizer.next_token() {
+        state.parse_result(token);
+        if state.stack.backstop.is_none() {
+            break;
+        }
+    }
+    state.finish()
 }
 
+/// Parses until a single term has been completed.
+///
+/// This means zero or more prefix operators followed by either a term token or a delimited
+/// group.
 pub fn parse_one_term<T, P>(
-    tokens: T,
+    mut tokenizer: T,
     parser: P,
-) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>>
+) -> Result<ExpressionQueueFor<P, T>, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
 {
-    ParseHelper::new(tokens, parser).parse_one_term()
+    let mut state = ParseState::new(parser);
+    let mut delimiter_stack_index = None;
+    while let Some(token) = tokenizer.next_token() {
+        state.parse_result(token);
+        if let Some(top) = state.stack.peek_top() {
+            if top.kind.is_delimiter() {
+                delimiter_stack_index = Some(state.stack.len());
+                break;
+            }
+            if state.state == State::PostTerm {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    if let Some(delimiter_stack_index) = delimiter_stack_index {
+        while let Some(token) = tokenizer.next_token() {
+            state.parse_result(token);
+            if state.stack.len() < delimiter_stack_index {
+                break;
+            }
+        }
+    }
+    state.finish()
 }
 
-pub type ExpressionQueue<P, T> = Vec<
+pub type ExpressionQueueFor<P, T> = Vec<
     Expression<
         <T as Tokenizer>::Position,
         <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
@@ -49,88 +96,26 @@ pub type ExpressionQueue<P, T> = Vec<
     >,
 >;
 
-struct ParseHelper<T: Tokenizer, P: Parser<T::Token>> {
-    tokenizer: T,
-    state: ParseState<T, P>,
-}
+pub type ExpressionQueue<Tok, Pos, Par> = Vec<
+    Expression<
+        Pos,
+        <Par as Parser<Tok>>::BinaryOperator,
+        <Par as Parser<Tok>>::UnaryOperator,
+        <Par as Parser<Tok>>::Term,
+    >,
+>;
 
-impl<T: Tokenizer, P: Parser<T::Token>> ParseHelper<T, P> {
-    fn new(tokenizer: T, parser: P) -> Self {
-        Self {
-            tokenizer,
-            state: ParseState::new(parser),
-        }
-    }
-
-    /// Parses until the end of input
-    fn parse_all(mut self) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
-        while let Some(token) = self.tokenizer.next_token() {
-            self.state.handle_token_result(token);
-        }
-        self.state.finish_parsing()
-    }
-
-    /// Parses until a single term has been completed.
-    ///
-    /// This means zero or more prefix operators followed by either a term token or a delimited
-    /// group.
-    fn parse_one_term(mut self) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
-        let mut delimiter_stack_index = None;
-        while let Some(token) = self.tokenizer.next_token() {
-            self.state.handle_token_result(token);
-            if let Some(top) = self.state.stack.peek_top() {
-                if top.kind.is_delimiter() {
-                    delimiter_stack_index = Some(self.state.stack.len());
-                    break;
-                }
-                if self.state.state == State::PostTerm {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        if let Some(delimiter_stack_index) = delimiter_stack_index {
-            while let Some(token) = self.tokenizer.next_token() {
-                self.state.handle_token_result(token);
-                if self.state.stack.len() < delimiter_stack_index {
-                    break;
-                }
-            }
-        }
-        self.state.finish_parsing()
-    }
-
-    fn parse_with_backstop(
-        mut self,
-        backstop: Backstop<T::Position, P::Precedence, P::Delimiter>,
-    ) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
-        self.state.stack.backstop = Some(StackElement {
-            span: backstop.span,
-            kind: backstop.kind,
-            operator: StackOperator::None { term: None },
-        });
-        while let Some(token) = self.tokenizer.next_token() {
-            self.state.handle_token_result(token);
-            if self.state.stack.backstop.is_none() {
-                break;
-            }
-        }
-        self.state.finish_parsing()
-    }
-}
-
-struct ParseState<T: Tokenizer, P: Parser<T::Token>> {
-    parser: P,
-    end_of_input: T::Position,
+struct ParseState<Tok, TokErr, Pos, Par: Parser<Tok>> {
+    parser: Par,
+    end_of_input: Pos,
     state: State,
-    stack: Stack<T, P>,
-    queue: ExpressionQueue<P, T>,
-    errors: Vec<ParseError<P::Error, T::Error, T::Position>>,
+    stack: Stack<Tok, Pos, Par>,
+    queue: ExpressionQueue<Tok, Pos, Par>,
+    errors: Vec<ParseError<Par::Error, TokErr, Pos>>,
 }
 
-impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
-    fn new(parser: P) -> Self {
+impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr, Pos, Par> {
+    fn new(parser: Par) -> Self {
         Self {
             parser,
             end_of_input: Default::default(),
@@ -141,7 +126,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
         }
     }
 
-    fn handle_token_result(&mut self, result: Result<Token<T::Token, T::Position>, T::Error>) {
+    pub fn parse_result(&mut self, result: Result<Token<Tok, Pos>, TokErr>) {
         match result {
             Err(e) => self.errors.push(ParseError {
                 span: Span {
@@ -151,12 +136,37 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
                 kind: ParseErrorKind::Tokenizer(e),
             }),
             Ok(token) => {
-                self.parse_next(token);
+                self.parse_token(token);
             }
         }
     }
 
-    fn finish_parsing(mut self) -> Result<ExpressionQueue<P, T>, ParseErrorsFor<P, T>> {
+    pub fn parse_token(&mut self, token: Token<Tok, Pos>) {
+        self.end_of_input = token.span.end.clone();
+        match self.parser.parse_token(token.kind) {
+            Ok(element) => match self.state {
+                State::PostOperator => self.parse_term(token.span, element),
+                State::PostTerm => self.parse_operator(token.span, element),
+            },
+            Err(error) => {
+                self.errors.push(ParseError {
+                    span: token.span,
+                    kind: ParseErrorKind::Parser(error),
+                });
+                // assume that the invalid token was the more expected kind, ideally producing the
+                // most useful errors.
+                match self.state {
+                    State::PostOperator => self.state = State::PostTerm,
+                    State::PostTerm => self.state = State::PostOperator,
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn finish(
+        mut self,
+    ) -> Result<ExpressionQueue<Tok, Pos, Par>, ParseErrors<Par::Error, TokErr, Pos>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
@@ -204,29 +214,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
         }
     }
 
-    fn parse_next(&mut self, token: Token<T::Token, T::Position>) {
-        self.end_of_input = token.span.end.clone();
-        match self.parser.parse_token(token.kind) {
-            Ok(element) => match self.state {
-                State::PostOperator => self.parse_term(token.span, element),
-                State::PostTerm => self.parse_operator(token.span, element),
-            },
-            Err(error) => {
-                self.errors.push(ParseError {
-                    span: token.span,
-                    kind: ParseErrorKind::Parser(error),
-                });
-                // assume that the invalid token was the more expected kind, ideally producing the
-                // most useful errors.
-                match self.state {
-                    State::PostOperator => self.state = State::PostTerm,
-                    State::PostTerm => self.state = State::PostOperator,
-                }
-            }
-        }
-    }
-
-    fn parse_term(&mut self, span: Span<T::Position>, element: ParserElement<P, T::Token>) {
+    fn parse_term(&mut self, span: Span<Pos>, element: ParserElement<Par, Tok>) {
         match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
@@ -287,7 +275,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
         }
     }
 
-    fn parse_operator(&mut self, span: Span<T::Position>, element: ParserElement<P, T::Token>) {
+    fn parse_operator(&mut self, span: Span<Pos>, element: ParserElement<Par, Tok>) {
         match element.postfix {
             Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(span, delimiter),
             Postfix::BinaryOperator {
@@ -336,7 +324,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
         }
     }
 
-    fn process_right_delimiter(&mut self, span: Span<T::Position>, right: P::Delimiter) {
+    fn process_right_delimiter(&mut self, span: Span<Pos>, right: Par::Delimiter) {
         // If we don't have a right-hand operand, demote the operator on the top of the stack
         // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
         // requires a right-hand operand), then push an error. We don't early return though, since
@@ -384,10 +372,10 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
 
     fn check_delimiter_match(
         &mut self,
-        left: P::Delimiter,
-        left_span: Span<T::Position>,
-        right: P::Delimiter,
-        right_span: Span<T::Position>,
+        left: Par::Delimiter,
+        left_span: Span<Pos>,
+        right: Par::Delimiter,
+        right_span: Span<Pos>,
     ) {
         if !left.matches(&right) {
             self.errors.push(ParseError {
@@ -399,10 +387,10 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
 
     fn process_binary_operator(
         &mut self,
-        span: Span<T::Position>,
-        fixity: Fixity<P::Precedence>,
-        binary: P::BinaryOperator,
-        unary: Option<P::UnaryOperator>,
+        span: Span<Pos>,
+        fixity: Fixity<Par::Precedence>,
+        binary: Par::BinaryOperator,
+        unary: Option<Par::UnaryOperator>,
     ) {
         if self.pop_while_lower_precedence(&fixity) {
             // backstop was hit
@@ -417,9 +405,9 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
 
     fn process_postfix_operator(
         &mut self,
-        span: Span<T::Position>,
-        precedence: P::Precedence,
-        operator: P::UnaryOperator,
+        span: Span<Pos>,
+        precedence: Par::Precedence,
+        operator: Par::UnaryOperator,
     ) {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
@@ -434,7 +422,7 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
     }
 
     // returns whether the backstop was popped
-    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) -> bool {
+    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<Par::Precedence>) -> bool {
         let has_backstop = self.stack.backstop.is_some();
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
@@ -448,24 +436,25 @@ impl<T: Tokenizer, P: Parser<T::Token>> ParseState<T, P> {
     }
 }
 
-impl<T: Tokenizer, P: Parser<T::Token>> Extend<Token<T::Token, T::Position>> for ParseState<T, P> {
-    fn extend<I>(&mut self, iter: I)
-    where
-        I: IntoIterator<Item = Token<T::Token, T::Position>>,
-    {
-        iter.into_iter().for_each(|tok| self.parse_next(tok))
-    }
-}
-
-impl<T: Tokenizer, P: Parser<T::Token>> Extend<Result<Token<T::Token, T::Position>, T::Error>>
-    for ParseState<T, P>
+impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> Extend<Token<Tok, Pos>>
+    for ParseState<Tok, TokErr, Pos, Par>
 {
     fn extend<I>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = Result<Token<T::Token, T::Position>, T::Error>>,
+        I: IntoIterator<Item = Token<Tok, Pos>>,
     {
-        iter.into_iter()
-            .for_each(|res| self.handle_token_result(res))
+        iter.into_iter().for_each(|tok| self.parse_token(tok))
+    }
+}
+
+impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> Extend<Result<Token<Tok, Pos>, TokErr>>
+    for ParseState<Tok, TokErr, Pos, Par>
+{
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = Result<Token<Tok, Pos>, TokErr>>,
+    {
+        iter.into_iter().for_each(|res| self.parse_result(res))
     }
 }
 
@@ -478,34 +467,6 @@ pub trait Parser<T> {
     type Error;
 
     fn parse_token(&self, kind: T) -> Result<ParserElement<Self, T>, Self::Error>;
-
-    fn parse<I>(&self, tokens: I) -> Result<ExpressionQueue<Self, I>, ParseErrorsFor<Self, I>>
-    where
-        I: Tokenizer<Token = T>,
-    {
-        parse(tokens, self)
-    }
-
-    fn parse_with_backstop<I>(
-        &self,
-        tokens: I,
-        backstop: Backstop<I::Position, Self::Precedence, Self::Delimiter>,
-    ) -> Result<ExpressionQueue<Self, I>, ParseErrorsFor<Self, I>>
-    where
-        I: Tokenizer<Token = T>,
-    {
-        parse_with_backstop(tokens, self, backstop)
-    }
-
-    fn parse_one_term<I>(
-        &self,
-        tokens: I,
-    ) -> Result<ExpressionQueue<Self, I>, ParseErrorsFor<Self, I>>
-    where
-        I: Tokenizer<Token = T>,
-    {
-        parse_one_term(tokens, self)
-    }
 }
 
 impl<P, T> Parser<T> for &'_ P
@@ -611,12 +572,12 @@ enum State {
     PostTerm,
 }
 
-struct Stack<T: Tokenizer, P: Parser<T::Token>> {
-    stack: Vec<StackElement<T, P>>,
-    backstop: Option<StackElement<T, P>>,
+struct Stack<Tok, Pos, Par: Parser<Tok>> {
+    stack: Vec<StackElement<Tok, Pos, Par>>,
+    backstop: Option<StackElement<Tok, Pos, Par>>,
 }
 
-impl<T: Tokenizer, P: Parser<T::Token>> Default for Stack<T, P> {
+impl<Tok, Pos, Par: Parser<Tok>> Default for Stack<Tok, Pos, Par> {
     fn default() -> Self {
         Stack {
             stack: Default::default(),
@@ -625,20 +586,20 @@ impl<T: Tokenizer, P: Parser<T::Token>> Default for Stack<T, P> {
     }
 }
 
-impl<T: Tokenizer, P: Parser<T::Token>> Stack<T, P> {
+impl<Tok, Pos, Par: Parser<Tok>> Stack<Tok, Pos, Par> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<T, P>) {
+    fn push(&mut self, element: StackElement<Tok, Pos, Par>) {
         self.stack.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<T, P>> {
+    fn pop(&mut self) -> Option<StackElement<Tok, Pos, Par>> {
         self.stack.pop().or_else(|| self.backstop.take())
     }
 
-    fn peek_top(&self) -> Option<&StackElement<T, P>> {
+    fn peek_top(&self) -> Option<&StackElement<Tok, Pos, Par>> {
         self.stack.last().or(self.backstop.as_ref())
     }
 
@@ -649,8 +610,8 @@ impl<T: Tokenizer, P: Parser<T::Token>> Stack<T, P> {
     /// Pops the stack if the new operator has lower precedence than the top of the stack
     fn pop_if_lower_precedence(
         &mut self,
-        fixity: &Fixity<P::Precedence>,
-    ) -> Option<StackElement<T, P>> {
+        fixity: &Fixity<Par::Precedence>,
+    ) -> Option<StackElement<Tok, Pos, Par>> {
         if match fixity {
             Fixity::Left(prec) => Some(prec) <= self.precedence(),
             Fixity::Right(prec) => Some(prec) < self.precedence(),
@@ -661,19 +622,19 @@ impl<T: Tokenizer, P: Parser<T::Token>> Stack<T, P> {
         }
     }
 
-    fn precedence(&self) -> Option<&P::Precedence> {
+    fn precedence(&self) -> Option<&Par::Precedence> {
         self.peek_top().and_then(StackElement::precedence)
     }
 }
 
-struct StackElement<T: Tokenizer, P: Parser<T::Token>> {
-    span: Span<T::Position>,
-    kind: BackstopKind<P::Precedence, P::Delimiter>,
-    operator: StackOperator<P::BinaryOperator, P::UnaryOperator, P::Term>,
+struct StackElement<Tok, Pos, Par: Parser<Tok>> {
+    span: Span<Pos>,
+    kind: BackstopKind<Par::Precedence, Par::Delimiter>,
+    operator: StackOperator<Par::BinaryOperator, Par::UnaryOperator, Par::Term>,
 }
 
-impl<T: Tokenizer, P: Parser<T::Token>> StackElement<T, P> {
-    fn precedence(&self) -> Option<&P::Precedence> {
+impl<Tok, Pos, Par: Parser<Tok>> StackElement<Tok, Pos, Par> {
+    fn precedence(&self) -> Option<&Par::Precedence> {
         self.kind.precedence()
     }
 }
