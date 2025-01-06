@@ -483,7 +483,7 @@ pub trait Parser<T> {
     }
 }
 
-impl<'a, P, T> Parser<T> for &'a P
+impl<P, T> Parser<T> for &'_ P
 where
     P: Parser<T> + ?Sized,
 {
