@@ -96,26 +96,26 @@ pub type ExpressionQueueFor<P, T> = Vec<
     >,
 >;
 
-pub type ExpressionQueue<Tok, Pos, Par> = Vec<
+pub type ExpressionQueue<T, Idx, P> = Vec<
     Expression<
-        Pos,
-        <Par as Parser<Tok>>::BinaryOperator,
-        <Par as Parser<Tok>>::UnaryOperator,
-        <Par as Parser<Tok>>::Term,
+        Idx,
+        <P as Parser<T>>::BinaryOperator,
+        <P as Parser<T>>::UnaryOperator,
+        <P as Parser<T>>::Term,
     >,
 >;
 
-struct ParseState<Tok, TokErr, Pos, Par: Parser<Tok>> {
-    parser: Par,
-    end_of_input: Pos,
+struct ParseState<T, TokErr, Idx, P: Parser<T>> {
+    parser: P,
+    end_of_input: Idx,
     state: State,
-    stack: Stack<Tok, Pos, Par>,
-    queue: ExpressionQueue<Tok, Pos, Par>,
-    errors: Vec<ParseError<Par::Error, TokErr, Pos>>,
+    stack: Stack<T, Idx, P>,
+    queue: ExpressionQueue<T, Idx, P>,
+    errors: Vec<ParseError<P::Error, TokErr, Idx>>,
 }
 
-impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr, Pos, Par> {
-    fn new(parser: Par) -> Self {
+impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P> {
+    pub fn new(parser: P) -> Self {
         Self {
             parser,
             end_of_input: Default::default(),
@@ -126,7 +126,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
         }
     }
 
-    pub fn parse_result(&mut self, result: Result<Token<Tok, Pos>, TokErr>) {
+    pub fn parse_result(&mut self, result: Result<Token<T, Idx>, TokErr>) {
         match result {
             Err(e) => self.errors.push(ParseError {
                 span: Span {
@@ -141,7 +141,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
         }
     }
 
-    pub fn parse_token(&mut self, token: Token<Tok, Pos>) {
+    pub fn parse_token(&mut self, token: Token<T, Idx>) {
         self.end_of_input = token.span.end.clone();
         match self.parser.parse_token(token.kind) {
             Ok(element) => match self.state {
@@ -166,7 +166,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
     #[allow(clippy::type_complexity)]
     pub fn finish(
         mut self,
-    ) -> Result<ExpressionQueue<Tok, Pos, Par>, ParseErrors<Par::Error, TokErr, Pos>> {
+    ) -> Result<ExpressionQueue<T, Idx, P>, ParseErrors<P::Error, TokErr, Idx>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
@@ -214,7 +214,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
         }
     }
 
-    fn parse_term(&mut self, span: Span<Pos>, element: ParserElement<Par, Tok>) {
+    fn parse_term(&mut self, span: Span<Idx>, element: ParserElement<P, T>) {
         match element.prefix {
             Prefix::LeftDelimiter {
                 delimiter,
@@ -275,7 +275,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
         }
     }
 
-    fn parse_operator(&mut self, span: Span<Pos>, element: ParserElement<Par, Tok>) {
+    fn parse_operator(&mut self, span: Span<Idx>, element: ParserElement<P, T>) {
         match element.postfix {
             Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(span, delimiter),
             Postfix::BinaryOperator {
@@ -324,7 +324,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
         }
     }
 
-    fn process_right_delimiter(&mut self, span: Span<Pos>, right: Par::Delimiter) {
+    fn process_right_delimiter(&mut self, span: Span<Idx>, right: P::Delimiter) {
         // If we don't have a right-hand operand, demote the operator on the top of the stack
         // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
         // requires a right-hand operand), then push an error. We don't early return though, since
@@ -372,10 +372,10 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
 
     fn check_delimiter_match(
         &mut self,
-        left: Par::Delimiter,
-        left_span: Span<Pos>,
-        right: Par::Delimiter,
-        right_span: Span<Pos>,
+        left: P::Delimiter,
+        left_span: Span<Idx>,
+        right: P::Delimiter,
+        right_span: Span<Idx>,
     ) {
         if !left.matches(&right) {
             self.errors.push(ParseError {
@@ -387,10 +387,10 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
 
     fn process_binary_operator(
         &mut self,
-        span: Span<Pos>,
-        fixity: Fixity<Par::Precedence>,
-        binary: Par::BinaryOperator,
-        unary: Option<Par::UnaryOperator>,
+        span: Span<Idx>,
+        fixity: Fixity<P::Precedence>,
+        binary: P::BinaryOperator,
+        unary: Option<P::UnaryOperator>,
     ) {
         if self.pop_while_lower_precedence(&fixity) {
             // backstop was hit
@@ -405,9 +405,9 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
 
     fn process_postfix_operator(
         &mut self,
-        span: Span<Pos>,
-        precedence: Par::Precedence,
-        operator: Par::UnaryOperator,
+        span: Span<Idx>,
+        precedence: P::Precedence,
+        operator: P::UnaryOperator,
     ) {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
@@ -422,7 +422,7 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
     }
 
     // returns whether the backstop was popped
-    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<Par::Precedence>) -> bool {
+    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) -> bool {
         let has_backstop = self.stack.backstop.is_some();
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
@@ -436,23 +436,23 @@ impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> ParseState<Tok, TokErr
     }
 }
 
-impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> Extend<Token<Tok, Pos>>
-    for ParseState<Tok, TokErr, Pos, Par>
+impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> Extend<Token<T, Idx>>
+    for ParseState<T, TokErr, Idx, P>
 {
     fn extend<I>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = Token<Tok, Pos>>,
+        I: IntoIterator<Item = Token<T, Idx>>,
     {
         iter.into_iter().for_each(|tok| self.parse_token(tok))
     }
 }
 
-impl<Tok, TokErr, Pos: Default + Clone, Par: Parser<Tok>> Extend<Result<Token<Tok, Pos>, TokErr>>
-    for ParseState<Tok, TokErr, Pos, Par>
+impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> Extend<Result<Token<T, Idx>, TokErr>>
+    for ParseState<T, TokErr, Idx, P>
 {
     fn extend<I>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = Result<Token<Tok, Pos>, TokErr>>,
+        I: IntoIterator<Item = Result<Token<T, Idx>, TokErr>>,
     {
         iter.into_iter().for_each(|res| self.parse_result(res))
     }
@@ -572,12 +572,12 @@ enum State {
     PostTerm,
 }
 
-struct Stack<Tok, Pos, Par: Parser<Tok>> {
-    stack: Vec<StackElement<Tok, Pos, Par>>,
-    backstop: Option<StackElement<Tok, Pos, Par>>,
+struct Stack<T, Idx, P: Parser<T>> {
+    stack: Vec<StackElement<T, Idx, P>>,
+    backstop: Option<StackElement<T, Idx, P>>,
 }
 
-impl<Tok, Pos, Par: Parser<Tok>> Default for Stack<Tok, Pos, Par> {
+impl<T, Idx, P: Parser<T>> Default for Stack<T, Idx, P> {
     fn default() -> Self {
         Stack {
             stack: Default::default(),
@@ -586,20 +586,20 @@ impl<Tok, Pos, Par: Parser<Tok>> Default for Stack<Tok, Pos, Par> {
     }
 }
 
-impl<Tok, Pos, Par: Parser<Tok>> Stack<Tok, Pos, Par> {
+impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
     fn new() -> Self {
         Default::default()
     }
 
-    fn push(&mut self, element: StackElement<Tok, Pos, Par>) {
+    fn push(&mut self, element: StackElement<T, Idx, P>) {
         self.stack.push(element);
     }
 
-    fn pop(&mut self) -> Option<StackElement<Tok, Pos, Par>> {
+    fn pop(&mut self) -> Option<StackElement<T, Idx, P>> {
         self.stack.pop().or_else(|| self.backstop.take())
     }
 
-    fn peek_top(&self) -> Option<&StackElement<Tok, Pos, Par>> {
+    fn peek_top(&self) -> Option<&StackElement<T, Idx, P>> {
         self.stack.last().or(self.backstop.as_ref())
     }
 
@@ -610,8 +610,8 @@ impl<Tok, Pos, Par: Parser<Tok>> Stack<Tok, Pos, Par> {
     /// Pops the stack if the new operator has lower precedence than the top of the stack
     fn pop_if_lower_precedence(
         &mut self,
-        fixity: &Fixity<Par::Precedence>,
-    ) -> Option<StackElement<Tok, Pos, Par>> {
+        fixity: &Fixity<P::Precedence>,
+    ) -> Option<StackElement<T, Idx, P>> {
         if match fixity {
             Fixity::Left(prec) => Some(prec) <= self.precedence(),
             Fixity::Right(prec) => Some(prec) < self.precedence(),
@@ -622,19 +622,19 @@ impl<Tok, Pos, Par: Parser<Tok>> Stack<Tok, Pos, Par> {
         }
     }
 
-    fn precedence(&self) -> Option<&Par::Precedence> {
+    fn precedence(&self) -> Option<&P::Precedence> {
         self.peek_top().and_then(StackElement::precedence)
     }
 }
 
-struct StackElement<Tok, Pos, Par: Parser<Tok>> {
-    span: Span<Pos>,
-    kind: BackstopKind<Par::Precedence, Par::Delimiter>,
-    operator: StackOperator<Par::BinaryOperator, Par::UnaryOperator, Par::Term>,
+struct StackElement<T, Idx, P: Parser<T>> {
+    span: Span<Idx>,
+    kind: BackstopKind<P::Precedence, P::Delimiter>,
+    operator: StackOperator<P::BinaryOperator, P::UnaryOperator, P::Term>,
 }
 
-impl<Tok, Pos, Par: Parser<Tok>> StackElement<Tok, Pos, Par> {
-    fn precedence(&self) -> Option<&Par::Precedence> {
+impl<T, Idx, P: Parser<T>> StackElement<T, Idx, P> {
+    fn precedence(&self) -> Option<&P::Precedence> {
         self.kind.precedence()
     }
 }
