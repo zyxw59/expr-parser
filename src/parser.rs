@@ -37,27 +37,10 @@ where
     T: Tokenizer,
 {
     let mut state = ParseState::new(parser);
-    let mut delimiter_stack_index = None;
     while let Some(token) = tokenizer.next_token() {
         state.parse_result(token);
-        if let Some(top) = state.stack.peek_top() {
-            if top.order.is_delimiter() {
-                delimiter_stack_index = Some(state.stack.len());
-                break;
-            }
-            if state.state == State::PostTerm {
-                break;
-            }
-        } else {
+        if state.has_parsed_term() {
             break;
-        }
-    }
-    if let Some(delimiter_stack_index) = delimiter_stack_index {
-        while let Some(token) = tokenizer.next_token() {
-            state.parse_result(token);
-            if state.stack.len() < delimiter_stack_index {
-                break;
-            }
         }
     }
     state.finish()
@@ -86,6 +69,7 @@ pub struct ParseState<T, TokErr, Idx, P: Parser<T>> {
     end_of_input: Idx,
     state: State,
     stack: Stack<T, Idx, P>,
+    first_delimiter_stack_idx: Option<usize>,
     queue: ExpressionQueue<T, Idx, P>,
     errors: Vec<ParseError<P::Error, TokErr, Idx>>,
 }
@@ -97,6 +81,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             end_of_input: Default::default(),
             state: State::PostOperator,
             stack: Stack::new(),
+            first_delimiter_stack_idx: None,
             queue: Vec::new(),
             errors: Vec::new(),
         }
@@ -135,6 +120,30 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                     State::PostOperator => self.state = State::PostTerm,
                     State::PostTerm => self.state = State::PostOperator,
                 }
+            }
+        }
+    }
+
+    pub fn has_parsed_term(&mut self) -> bool {
+        if let Some(idx) = self.first_delimiter_stack_idx {
+            // if we've popped that delimiter, we've parsed a term
+            self.stack.len() < idx
+        } else {
+            // we haven't encountered any open delimiters yet
+            if let Some(top) = self.stack.peek_top() {
+                if top.order.is_delimiter() {
+                    // just opened a delimiter; we won't have parsed a term until we close it
+                    self.first_delimiter_stack_idx = Some(self.stack.len());
+                    false
+                } else if self.state == State::PostTerm {
+                    // we just parsed a Term, this term is complete
+                    true
+                } else {
+                    false
+                }
+            } else {
+                // nothing on the stack: unless the output is empty, we must have parsed a term
+                !self.queue.is_empty()
             }
         }
     }
