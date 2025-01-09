@@ -39,7 +39,7 @@ where
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
         state.parse_result(token);
-        if state.has_parsed_term() {
+        if state.has_parsed_expression() {
             break;
         }
     }
@@ -122,9 +122,8 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         }
     }
 
-    /// Returns whether the parser has parsed a top-level term. This could be any number of
-    /// unary operators, followed by a delimited expression or a basic term (literal or variable).
-    pub fn has_parsed_term(&mut self) -> bool {
+    /// Returns whether the parser has parsed a complete expression.
+    pub fn has_parsed_expression(&mut self) -> bool {
         // no delimiters on the stack
         !self.stack.has_delimiter()
             && (
@@ -886,14 +885,14 @@ mod tests {
     #[test_case("-(4 + (3 * 3)", false ; "incomplete delimiter")]
     #[test_case("-(4 + (3 * 3))", true ; "complete delimiter")]
     #[test_case("3,", true ; "binary with optional rhs")]
-    fn has_parsed_term(input: &str, has_parsed_term: bool) -> anyhow::Result<()> {
+    fn is_complete(input: &str, is_complete: bool) -> anyhow::Result<()> {
         let mut tokens = SimpleTokenizer::new(StrSource::new(input));
         let mut state = ParseState::new(SimpleExprContext);
         while let Some(t) = tokens.next_token() {
             state.parse_result(t);
         }
-        assert_eq!(state.has_parsed_term(), has_parsed_term);
-        if has_parsed_term {
+        assert_eq!(state.has_parsed_expression(), is_complete);
+        if is_complete {
             state.finish()?;
         } else {
             state.finish().unwrap_err();
