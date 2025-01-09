@@ -105,7 +105,7 @@ pub type ExpressionQueue<T, Idx, P> = Vec<
     >,
 >;
 
-struct ParseState<T, TokErr, Idx, P: Parser<T>> {
+pub struct ParseState<T, TokErr, Idx, P: Parser<T>> {
     parser: P,
     end_of_input: Idx,
     state: State,
@@ -121,6 +121,19 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             end_of_input: Default::default(),
             state: State::PostOperator,
             stack: Stack::new(),
+            queue: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+    pub fn new_with_backstop(
+        parser: P,
+        backstop: Backstop<Idx, P::Precedence, P::Delimiter>,
+    ) -> Self {
+        Self {
+            parser,
+            end_of_input: Default::default(),
+            state: State::PostOperator,
+            stack: Stack::new_with_backstop(backstop),
             queue: Vec::new(),
             errors: Vec::new(),
         }
@@ -591,6 +604,13 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
         Default::default()
     }
 
+    fn new_with_backstop(backstop: Backstop<Idx, P::Precedence, P::Delimiter>) -> Self {
+        Self {
+            stack: Default::default(),
+            backstop: Some(backstop.into()),
+        }
+    }
+
     fn push(&mut self, element: StackElement<T, Idx, P>) {
         self.stack.push(element);
     }
@@ -636,6 +656,18 @@ struct StackElement<T, Idx, P: Parser<T>> {
 impl<T, Idx, P: Parser<T>> StackElement<T, Idx, P> {
     fn precedence(&self) -> Option<&P::Precedence> {
         self.kind.precedence()
+    }
+}
+
+impl<T, Idx, P: Parser<T>> From<Backstop<Idx, P::Precedence, P::Delimiter>>
+    for StackElement<T, Idx, P>
+{
+    fn from(backstop: Backstop<Idx, P::Precedence, P::Delimiter>) -> Self {
+        Self {
+            span: backstop.span,
+            kind: backstop.kind,
+            operator: StackOperator::None { term: None },
+        }
     }
 }
 
