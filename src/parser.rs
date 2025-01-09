@@ -24,30 +24,6 @@ where
     state.finish()
 }
 
-pub fn parse_with_backstop<T, P>(
-    mut tokenizer: T,
-    parser: P,
-    backstop: Backstop<T::Position, P::Precedence, P::Delimiter>,
-) -> Result<ExpressionQueueFor<P, T>, ParseErrorsFor<P, T>>
-where
-    P: Parser<T::Token>,
-    T: Tokenizer,
-{
-    let mut state = ParseState::new(parser);
-    state.stack.backstop = Some(StackElement {
-        span: backstop.span,
-        kind: backstop.kind,
-        operator: StackOperator::None { term: None },
-    });
-    while let Some(token) = tokenizer.next_token() {
-        state.parse_result(token);
-        if state.stack.backstop.is_none() {
-            break;
-        }
-    }
-    state.finish()
-}
-
 /// Parses until a single term has been completed.
 ///
 /// This means zero or more prefix operators followed by either a term token or a delimited
@@ -65,7 +41,7 @@ where
     while let Some(token) = tokenizer.next_token() {
         state.parse_result(token);
         if let Some(top) = state.stack.peek_top() {
-            if top.kind.is_delimiter() {
+            if top.order.is_delimiter() {
                 delimiter_stack_index = Some(state.stack.len());
                 break;
             }
@@ -121,19 +97,6 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             end_of_input: Default::default(),
             state: State::PostOperator,
             stack: Stack::new(),
-            queue: Vec::new(),
-            errors: Vec::new(),
-        }
-    }
-    pub fn new_with_backstop(
-        parser: P,
-        backstop: Backstop<Idx, P::Precedence, P::Delimiter>,
-    ) -> Self {
-        Self {
-            parser,
-            end_of_input: Default::default(),
-            state: State::PostOperator,
-            stack: Stack::new_with_backstop(backstop),
             queue: Vec::new(),
             errors: Vec::new(),
         }
@@ -198,7 +161,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                         },
                     })
                 }
-                if el.kind.is_delimiter() {
+                if el.order.is_delimiter() {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::UnmatchedLeftDelimiter,
                         span: el.span,
@@ -213,7 +176,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                     span: el.span.clone(),
                 });
             }
-            if el.kind.is_delimiter() {
+            if el.order.is_delimiter() {
                 self.errors.push(ParseError {
                     kind: ParseErrorKind::UnmatchedLeftDelimiter,
                     span: el.span,
@@ -236,7 +199,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             } => {
                 self.stack.push(StackElement {
                     span,
-                    kind: BackstopKind::Delimiter(delimiter),
+                    order: StackOrder::Delimiter(delimiter),
                     operator: StackOperator::unary_delimiter(operator, empty),
                 });
                 self.state = State::PostOperator;
@@ -251,7 +214,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             } => {
                 self.stack.push(StackElement {
                     span,
-                    kind: BackstopKind::Precedence(precedence),
+                    order: StackOrder::Precedence(precedence),
                     operator: StackOperator::Unary {
                         unary: operator,
                         term: no_rhs,
@@ -317,7 +280,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                 // stack after the closing delimiter is matched
                 self.stack.push(StackElement {
                     span,
-                    kind: BackstopKind::Delimiter(delimiter),
+                    order: StackOrder::Delimiter(delimiter),
                     operator: StackOperator::Binary {
                         binary: operator,
                         unary: empty,
@@ -357,7 +320,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                         span: span.clone(),
                     });
                 };
-                if let BackstopKind::Delimiter(left) = el.kind {
+                if let StackOrder::Delimiter(left) = el.order {
                     self.state = State::PostTerm;
                     self.check_delimiter_match(left, el.span, right, span);
                     return;
@@ -372,7 +335,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                     span: el.span.clone(),
                 });
             }
-            if let BackstopKind::Delimiter(left) = el.kind {
+            if let StackOrder::Delimiter(left) = el.order {
                 self.check_delimiter_match(left, el.span, right, span);
                 return;
             }
@@ -405,13 +368,10 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         binary: P::BinaryOperator,
         unary: Option<P::UnaryOperator>,
     ) {
-        if self.pop_while_lower_precedence(&fixity) {
-            // backstop was hit
-            return;
-        }
+        self.pop_while_lower_precedence(&fixity);
         self.stack.push(StackElement {
             span,
-            kind: BackstopKind::Precedence(fixity.into_precedence()),
+            order: StackOrder::Precedence(fixity.into_precedence()),
             operator: StackOperator::Binary { binary, unary },
         });
     }
@@ -424,19 +384,14 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
     ) {
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
-        if self.pop_while_lower_precedence(&fixity) {
-            // backstop was hit
-            return;
-        }
+        self.pop_while_lower_precedence(&fixity);
         self.queue.push(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
         });
     }
 
-    // returns whether the backstop was popped
-    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) -> bool {
-        let has_backstop = self.stack.backstop.is_some();
+    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
                 self.queue.push(Expression {
@@ -445,7 +400,6 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                 });
             }
         }
-        has_backstop && self.stack.backstop.is_none()
     }
 }
 
@@ -556,17 +510,12 @@ pub enum Postfix<P, D, B, U> {
     None,
 }
 
-pub struct Backstop<Idx, P, D> {
-    pub span: Span<Idx>,
-    pub kind: BackstopKind<P, D>,
-}
-
-pub enum BackstopKind<P, D> {
+pub enum StackOrder<P, D> {
     Precedence(P),
     Delimiter(D),
 }
 
-impl<P, D> BackstopKind<P, D> {
+impl<P, D> StackOrder<P, D> {
     fn precedence(&self) -> Option<&P> {
         match self {
             Self::Precedence(p) => Some(p),
@@ -587,14 +536,12 @@ enum State {
 
 struct Stack<T, Idx, P: Parser<T>> {
     stack: Vec<StackElement<T, Idx, P>>,
-    backstop: Option<StackElement<T, Idx, P>>,
 }
 
 impl<T, Idx, P: Parser<T>> Default for Stack<T, Idx, P> {
     fn default() -> Self {
         Stack {
             stack: Default::default(),
-            backstop: None,
         }
     }
 }
@@ -604,23 +551,16 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
         Default::default()
     }
 
-    fn new_with_backstop(backstop: Backstop<Idx, P::Precedence, P::Delimiter>) -> Self {
-        Self {
-            stack: Default::default(),
-            backstop: Some(backstop.into()),
-        }
-    }
-
     fn push(&mut self, element: StackElement<T, Idx, P>) {
         self.stack.push(element);
     }
 
     fn pop(&mut self) -> Option<StackElement<T, Idx, P>> {
-        self.stack.pop().or_else(|| self.backstop.take())
+        self.stack.pop()
     }
 
     fn peek_top(&self) -> Option<&StackElement<T, Idx, P>> {
-        self.stack.last().or(self.backstop.as_ref())
+        self.stack.last()
     }
 
     fn len(&self) -> usize {
@@ -649,25 +589,13 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
 
 struct StackElement<T, Idx, P: Parser<T>> {
     span: Span<Idx>,
-    kind: BackstopKind<P::Precedence, P::Delimiter>,
+    order: StackOrder<P::Precedence, P::Delimiter>,
     operator: StackOperator<P::BinaryOperator, P::UnaryOperator, P::Term>,
 }
 
 impl<T, Idx, P: Parser<T>> StackElement<T, Idx, P> {
     fn precedence(&self) -> Option<&P::Precedence> {
-        self.kind.precedence()
-    }
-}
-
-impl<T, Idx, P: Parser<T>> From<Backstop<Idx, P::Precedence, P::Delimiter>>
-    for StackElement<T, Idx, P>
-{
-    fn from(backstop: Backstop<Idx, P::Precedence, P::Delimiter>) -> Self {
-        Self {
-            span: backstop.span,
-            kind: backstop.kind,
-            operator: StackOperator::None { term: None },
-        }
+        self.order.precedence()
     }
 }
 
@@ -711,8 +639,8 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        parse, parse_one_term, parse_with_backstop, Backstop, BackstopKind, Delimiter, Element,
-        Parser, Postfix, Prefix, EXPECT_OPERATOR, EXPECT_TERM,
+        parse, parse_one_term, Delimiter, Element, Parser, Postfix, Prefix, EXPECT_OPERATOR,
+        EXPECT_TERM,
     };
     use crate::{
         error::ParseErrorKind,
@@ -918,36 +846,6 @@ mod tests {
     fn parse_one(input: &str, output: &str, rest: &str) -> anyhow::Result<()> {
         let mut tokens = SimpleTokenizer::new(StrSource::new(input));
         let actual = parse_one_term(&mut tokens, SimpleExprContext)?
-            .into_iter()
-            .map(expr_to_str)
-            .collect::<Vec<_>>();
-        let expected = output.split_whitespace().collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-        let actual_rest = tokens
-            .map(|res| res.map(|tok| tok.kind))
-            .collect::<Result<Vec<_>, _>>()?;
-        let expected_rest = SimpleTokenizer::new(StrSource::new(rest))
-            .map(|res| res.map(|tok| tok.kind))
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(actual_rest, expected_rest);
-        Ok(())
-    }
-
-    #[test_case("1 * (3 + 4)) rest", BackstopKind::Delimiter(SimpleDelimiter::Paren), "1 3 4 + *", "rest" ; "delimited")]
-    #[test_case("1 * (3, 4), rest", BackstopKind::Precedence(SimplePrecedence::Comma), "1 3 4 , *", "rest" ; "precedence")]
-    #[test_case("1 * 3 + 4", BackstopKind::Precedence(SimplePrecedence::Additive), "1 3 *", "4" ; "precedence without rhs")]
-    fn parse_backstop(
-        input: &str,
-        backstop: BackstopKind<SimplePrecedence, SimpleDelimiter>,
-        output: &str,
-        rest: &str,
-    ) -> anyhow::Result<()> {
-        let mut tokens = SimpleTokenizer::new(StrSource::new(input));
-        let backstop = Backstop {
-            kind: backstop,
-            span: Default::default(),
-        };
-        let actual = parse_with_backstop(&mut tokens, SimpleExprContext, backstop)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
