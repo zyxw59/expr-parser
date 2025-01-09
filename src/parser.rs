@@ -124,6 +124,21 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         }
     }
 
+    /// Returns whether the parser has parsed a single top-level term. This could be any number of
+    /// unary operators, followed by a delimited expression or a basic term (literal or variable).
+    ///
+    /// This method must be called after every call to `parse_result` or `parse_token` in order to
+    /// update its state. If it is not called after each of those calls, it may return incorrect
+    /// results.
+    ///
+    /// If parsing continues after this method returns `true`, it is not guaranteed to return
+    /// useful information.
+    // TODO: can this be reworked so that it always indicates basically, "can we stop here?"
+    // TODO: can it be reworked so that it doesn't need to be called constantly to maintain state?
+    //       the only thing it needs to update is `self.first_delimiter_stack_idx`; it could
+    //       instead just check if there are any delimiters on the stack. Or maybe it's a small
+    //       enough overhead to just store that info in the stack itself, so it will never get
+    //       out-of-date
     pub fn has_parsed_term(&mut self) -> bool {
         if let Some(idx) = self.first_delimiter_stack_idx {
             // if we've popped that delimiter, we've parsed a term
