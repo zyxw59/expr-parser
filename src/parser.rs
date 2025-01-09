@@ -163,6 +163,11 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         }
     }
 
+    /// Returns whether the parser has encountered at least one error
+    pub fn has_error(&mut self) -> bool {
+        !self.errors.is_empty()
+    }
+
     #[allow(clippy::type_complexity)]
     pub fn finish(
         mut self,
