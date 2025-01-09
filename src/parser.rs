@@ -69,7 +69,6 @@ pub struct ParseState<T, TokErr, Idx, P: Parser<T>> {
     end_of_input: Idx,
     state: State,
     stack: Stack<T, Idx, P>,
-    first_delimiter_stack_idx: Option<usize>,
     queue: ExpressionQueue<T, Idx, P>,
     errors: Vec<ParseError<P::Error, TokErr, Idx>>,
 }
@@ -81,7 +80,6 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             end_of_input: Default::default(),
             state: State::PostOperator,
             stack: Stack::new(),
-            first_delimiter_stack_idx: None,
             queue: Vec::new(),
             errors: Vec::new(),
         }
@@ -124,43 +122,19 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         }
     }
 
-    /// Returns whether the parser has parsed a single top-level term. This could be any number of
+    /// Returns whether the parser has parsed a top-level term. This could be any number of
     /// unary operators, followed by a delimited expression or a basic term (literal or variable).
-    ///
-    /// This method must be called after every call to `parse_result` or `parse_token` in order to
-    /// update its state. If it is not called after each of those calls, it may return incorrect
-    /// results.
-    ///
-    /// If parsing continues after this method returns `true`, it is not guaranteed to return
-    /// useful information.
-    // TODO: can this be reworked so that it always indicates basically, "can we stop here?"
-    // TODO: can it be reworked so that it doesn't need to be called constantly to maintain state?
-    //       the only thing it needs to update is `self.first_delimiter_stack_idx`; it could
-    //       instead just check if there are any delimiters on the stack. Or maybe it's a small
-    //       enough overhead to just store that info in the stack itself, so it will never get
-    //       out-of-date
     pub fn has_parsed_term(&mut self) -> bool {
-        if let Some(idx) = self.first_delimiter_stack_idx {
-            // if we've popped that delimiter, we've parsed a term
-            self.stack.len() < idx
-        } else {
-            // we haven't encountered any open delimiters yet
-            if let Some(top) = self.stack.peek_top() {
-                if top.order.is_delimiter() {
-                    // just opened a delimiter; we won't have parsed a term until we close it
-                    self.first_delimiter_stack_idx = Some(self.stack.len());
-                    false
-                } else if self.state == State::PostTerm {
-                    // we just parsed a Term, this term is complete
-                    true
-                } else {
-                    false
-                }
-            } else {
-                // nothing on the stack: unless the output is empty, we must have parsed a term
-                !self.queue.is_empty()
-            }
-        }
+        // no delimiters on the stack
+        !self.stack.has_delimiter()
+            && (
+                // in post-term state or the top of the stack can go without a right-hand-side
+                self.state == State::PostTerm
+                    || self
+                        .stack
+                        .peek_top()
+                        .is_some_and(|top| top.operator.can_have_no_rhs())
+            )
     }
 
     /// Returns whether the parser has encountered at least one error
@@ -565,12 +539,14 @@ enum State {
 
 struct Stack<T, Idx, P: Parser<T>> {
     stack: Vec<StackElement<T, Idx, P>>,
+    first_delimiter_idx: Option<usize>,
 }
 
 impl<T, Idx, P: Parser<T>> Default for Stack<T, Idx, P> {
     fn default() -> Self {
         Stack {
             stack: Default::default(),
+            first_delimiter_idx: None,
         }
     }
 }
@@ -581,19 +557,26 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
     }
 
     fn push(&mut self, element: StackElement<T, Idx, P>) {
+        if element.order.is_delimiter() && self.first_delimiter_idx.is_none() {
+            self.first_delimiter_idx = Some(self.stack.len());
+        }
         self.stack.push(element);
     }
 
     fn pop(&mut self) -> Option<StackElement<T, Idx, P>> {
-        self.stack.pop()
+        let el = self.stack.pop();
+        if Some(self.stack.len()) == self.first_delimiter_idx {
+            self.first_delimiter_idx = None
+        }
+        el
     }
 
     fn peek_top(&self) -> Option<&StackElement<T, Idx, P>> {
         self.stack.last()
     }
 
-    fn len(&self) -> usize {
-        self.stack.len()
+    fn has_delimiter(&self) -> bool {
+        self.first_delimiter_idx.is_some()
     }
 
     /// Pops the stack if the new operator has lower precedence than the top of the stack
@@ -657,6 +640,12 @@ impl<B, U, T> StackOperator<B, U, T> {
             Self::Binary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
         }
     }
+    fn can_have_no_rhs(&self) -> bool {
+        match self {
+            Self::None { term } | Self::Unary { term, .. } => term.is_some(),
+            Self::Binary { unary, .. } => unary.is_some(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -668,14 +657,14 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        parse, parse_one_term, Delimiter, Element, Parser, Postfix, Prefix, EXPECT_OPERATOR,
-        EXPECT_TERM,
+        parse, parse_one_term, Delimiter, Element, ParseState, Parser, Postfix, Prefix,
+        EXPECT_OPERATOR, EXPECT_TERM,
     };
     use crate::{
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
         operator::Fixity,
-        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource},
+        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource, Tokenizer},
     };
 
     struct SimpleExprContext;
@@ -887,6 +876,28 @@ mod tests {
             .map(|res| res.map(|tok| tok.kind))
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(actual_rest, expected_rest);
+        Ok(())
+    }
+
+    #[test_case("-", false ; "unary")]
+    #[test_case("-3", true ; "unary with rhs")]
+    #[test_case("-3 *", false ; "binary")]
+    #[test_case("-3 * 3", true ; "binary with rhs")]
+    #[test_case("-(4 + (3 * 3)", false ; "incomplete delimiter")]
+    #[test_case("-(4 + (3 * 3))", true ; "complete delimiter")]
+    #[test_case("3,", true ; "binary with optional rhs")]
+    fn has_parsed_term(input: &str, has_parsed_term: bool) -> anyhow::Result<()> {
+        let mut tokens = SimpleTokenizer::new(StrSource::new(input));
+        let mut state = ParseState::new(SimpleExprContext);
+        while let Some(t) = tokens.next_token() {
+            state.parse_result(t);
+        }
+        assert_eq!(state.has_parsed_term(), has_parsed_term);
+        if has_parsed_term {
+            state.finish()?;
+        } else {
+            state.finish().unwrap_err();
+        }
         Ok(())
     }
 
