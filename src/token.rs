@@ -6,6 +6,7 @@ use std::{
 };
 
 use bstr::ByteSlice;
+use bytes::{Bytes, BytesMut};
 use itertools::Either;
 use unicode_xid::UnicodeXID;
 
@@ -13,23 +14,40 @@ use crate::Span;
 
 pub trait Tokenizer {
     type Token;
+    type Position: Clone + Default;
     type Error;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>>;
+    fn next_token(&mut self) -> Option<Result<TokenFor<Self>, Self::Error>>;
 }
 
 impl<T: Tokenizer> Tokenizer for &mut T {
     type Token = T::Token;
+    type Position = T::Position;
     type Error = T::Error;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+    fn next_token(&mut self) -> Option<Result<TokenFor<Self>, Self::Error>> {
         T::next_token(self)
+    }
+}
+
+pub struct IterTokenizer<I>(pub I);
+impl<I, T, Idx, E> Tokenizer for IterTokenizer<I>
+where
+    I: Iterator<Item = Result<Token<T, Idx>, E>>,
+    Idx: Clone + Default,
+{
+    type Token = T;
+    type Position = Idx;
+    type Error = E;
+
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token, Self::Position>, Self::Error>> {
+        self.0.next()
     }
 }
 
 /// A tokenizer which tokenizes characters by grouping them into sets.
 pub struct CharSetTokenizer<S, C> {
-    source: S,
+    pub source: S,
     _marker: PhantomData<fn() -> C>,
 }
 
@@ -40,6 +58,17 @@ pub enum CharSetResult<T, E> {
     Done(Option<T>),
     /// Reject the character and discard the current token, returning an error
     Err(E),
+}
+
+impl<T, E> CharSetResult<T, E> {
+    pub fn map_into<U: From<T>, F: From<E>>(self) -> CharSetResult<U, F> {
+        match self {
+            CharSetResult::Continue => CharSetResult::Continue,
+            CharSetResult::Done(Some(val)) => CharSetResult::Done(Some(val.into())),
+            CharSetResult::Done(None) => CharSetResult::Done(None),
+            CharSetResult::Err(err) => CharSetResult::Err(err.into()),
+        }
+    }
 }
 
 pub trait CharSet<C>: Default {
@@ -95,9 +124,10 @@ impl<S: Source, C: CharSet<S::Char>> CharSetTokenizer<S, C> {
 
 impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
     type Token = CharSetToken<S, C>;
+    type Position = usize;
     type Error = CharSetError<S, C>;
 
-    fn next_token(&mut self) -> Option<Result<Token<Self::Token>, Self::Error>> {
+    fn next_token(&mut self) -> Option<Result<Token<Self::Token, Self::Position>, Self::Error>> {
         while !self.source.is_empty() {
             let start = self.source.next_index();
             match self.advance_while() {
@@ -117,7 +147,7 @@ impl<S: Source, C: CharSet<S::Char>> Tokenizer for CharSetTokenizer<S, C> {
 }
 
 impl<S: Source, C: CharSet<S::Char>> Iterator for CharSetTokenizer<S, C> {
-    type Item = Result<Token<<Self as Tokenizer>::Token>, <Self as Tokenizer>::Error>;
+    type Item = Result<Token<<Self as Tokenizer>::Token, usize>, <Self as Tokenizer>::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
@@ -190,7 +220,8 @@ impl<'s> Source for StrSource<'s> {
 
 pub struct BufReadSource<R> {
     reader: R,
-    buffer: Vec<u8>,
+    line_buffer: Vec<u8>,
+    buffer: BytesMut,
     index: usize,
     is_empty: bool,
 }
@@ -199,7 +230,8 @@ impl<R: BufRead> BufReadSource<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            buffer: Vec::new(),
+            line_buffer: Vec::new(),
+            buffer: BytesMut::new(),
             index: 0,
             is_empty: false,
         }
@@ -207,7 +239,7 @@ impl<R: BufRead> BufReadSource<R> {
 
     fn flil_buf(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
-            match self.reader.read_until(b'\n', &mut self.buffer) {
+            match self.reader.read_until(b'\n', &mut self.line_buffer) {
                 Ok(0) => self.is_empty = true,
                 Ok(_) => {}
                 Err(error) => {
@@ -215,6 +247,8 @@ impl<R: BufRead> BufReadSource<R> {
                     return Err(error);
                 }
             }
+            self.buffer.extend_from_slice(&self.line_buffer);
+            self.line_buffer.clear();
         }
         Ok(())
     }
@@ -222,7 +256,7 @@ impl<R: BufRead> BufReadSource<R> {
 
 impl<R: BufRead> Source for BufReadSource<R> {
     type Char = char;
-    type String = String;
+    type String = Bytes;
     type Error = io::Error;
 
     fn next_index(&self) -> usize {
@@ -236,8 +270,8 @@ impl<R: BufRead> Source for BufReadSource<R> {
     fn advance_while(
         &mut self,
         mut predicate: impl FnMut(char) -> bool,
-    ) -> Result<String, io::Error> {
-        let mut token = String::new();
+    ) -> Result<Self::String, io::Error> {
+        let mut token = self.buffer.split_to(0);
         while !self.is_empty {
             self.flil_buf()?;
             let buffer = &self.buffer;
@@ -248,20 +282,17 @@ impl<R: BufRead> Source for BufReadSource<R> {
                 .next()
                 .unwrap_or(buffer.len());
             self.index += offset;
-            let mut s = self.buffer.split_off(offset);
-            std::mem::swap(&mut s, &mut self.buffer);
-            let s =
-                String::from_utf8(s).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            if token.is_empty() {
-                token = s;
-            } else {
-                token.push_str(&s);
+            let s = self.buffer.split_to(offset);
+
+            if let Err(e) = std::str::from_utf8(&s) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, e));
             }
+            token.unsplit(s);
             if !self.buffer.is_empty() {
                 break;
             }
         }
-        Ok(token)
+        Ok(token.freeze())
     }
 }
 
@@ -308,9 +339,10 @@ impl SimpleCharSet {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NumberState {
     /// The first digit of the integer part has been matched
+    #[default]
     Integer,
     /// The dot separating the integer and fractional parts has been matched
     Dot,
@@ -318,10 +350,22 @@ pub enum NumberState {
     Fractional,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NumberKind {
+    Integer,
+    Float,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SimpleCharSetError {
     #[error("unterminated string")]
     UnterminatedString,
+}
+
+impl From<Infallible> for SimpleCharSetError {
+    fn from(err: Infallible) -> Self {
+        match err {}
+    }
 }
 
 impl CharSet<char> for SimpleCharSet {
@@ -337,7 +381,7 @@ impl CharSet<char> for SimpleCharSet {
             (Self::Number(mut state), ch) => {
                 let res = state.next_char(ch);
                 *self = Self::Number(state);
-                res
+                res.map_into()
             }
             (Self::Identifier, ch) if is_ident_char(ch) => CharSetResult::Continue,
             (Self::String(false), '"') => {
@@ -375,7 +419,10 @@ impl CharSet<char> for SimpleCharSet {
     fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error> {
         match self {
             Self::None => Ok(None),
-            Self::Number(state) => state.end_of_input(),
+            Self::Number(state) => state
+                .end_of_input()
+                .map(|opt| opt.map(Into::into))
+                .map_err(Into::into),
             Self::Identifier | Self::Singleton | Self::Comparison | Self::Dot | Self::Other => {
                 Ok(Some(SimpleCharSetTokenKind::Tag))
             }
@@ -386,8 +433,11 @@ impl CharSet<char> for SimpleCharSet {
     }
 }
 
-impl NumberState {
-    fn next_char(&mut self, ch: char) -> CharSetResult<SimpleCharSetTokenKind, SimpleCharSetError> {
+impl CharSet<char> for NumberState {
+    type TokenKind = NumberKind;
+    type Error = Infallible;
+
+    fn next_char(&mut self, ch: char) -> CharSetResult<Self::TokenKind, Self::Error> {
         match (*self, ch) {
             (Self::Integer, '.') => {
                 *self = Self::Dot;
@@ -398,28 +448,28 @@ impl NumberState {
                 CharSetResult::Continue
             }
             (Self::Integer | Self::Fractional, ch) if is_number_char(ch) => CharSetResult::Continue,
-            (Self::Integer, _) => CharSetResult::Done(Some(SimpleCharSetTokenKind::Integer)),
-            (Self::Dot | Self::Fractional, _) => {
-                CharSetResult::Done(Some(SimpleCharSetTokenKind::Float))
-            }
+            (Self::Integer, _) => CharSetResult::Done(Some(NumberKind::Integer)),
+            (Self::Dot | Self::Fractional, _) => CharSetResult::Done(Some(NumberKind::Float)),
         }
     }
 
-    fn end_of_input(self) -> Result<Option<SimpleCharSetTokenKind>, SimpleCharSetError> {
+    fn end_of_input(self) -> Result<Option<Self::TokenKind>, Self::Error> {
         match self {
-            Self::Integer => Ok(Some(SimpleCharSetTokenKind::Integer)),
-            Self::Dot | Self::Fractional => Ok(Some(SimpleCharSetTokenKind::Float)),
+            Self::Integer => Ok(Some(NumberKind::Integer)),
+            Self::Dot | Self::Fractional => Ok(Some(NumberKind::Float)),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Token<T> {
-    pub span: Span,
+pub struct Token<T, Idx> {
+    pub span: Span<Idx>,
     pub kind: T,
 }
 
-impl<T: fmt::Display> fmt::Display for Token<T> {
+pub type TokenFor<T> = Token<<T as Tokenizer>::Token, <T as Tokenizer>::Position>;
+
+impl<T: fmt::Display, Idx: fmt::Display> fmt::Display for Token<T, Idx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.kind, f)
     }
@@ -428,9 +478,14 @@ impl<T: fmt::Display> fmt::Display for Token<T> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimpleCharSetTokenKind {
     Tag,
-    Integer,
-    Float,
+    Number(NumberKind),
     String,
+}
+
+impl From<NumberKind> for SimpleCharSetTokenKind {
+    fn from(number: NumberKind) -> Self {
+        Self::Number(number)
+    }
 }
 
 #[inline]
@@ -473,9 +528,10 @@ fn is_other_continuation_char(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use test_case::test_case;
 
-    use super::{BufReadSource, SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
+    use super::{BufReadSource, NumberKind, SimpleCharSetTokenKind, SimpleTokenizer, StrSource};
 
     #[test_case("abc", SimpleCharSetTokenKind::Tag, "abc" ; "tag abc")]
     #[test_case("a\u{0300}bc", SimpleCharSetTokenKind::Tag, "a\u{0300}bc" ; "tag with combining char")]
@@ -487,13 +543,13 @@ mod tests {
     #[test_case("-=", SimpleCharSetTokenKind::Tag, "-=" ; "other char followed by comparison")]
     #[test_case("..", SimpleCharSetTokenKind::Tag, ".." ; "tag starting with dot")]
     #[test_case("..123", SimpleCharSetTokenKind::Tag, ".." ; "tag starting with dot followed by number")]
-    #[test_case("123", SimpleCharSetTokenKind::Integer, "123" ; "integer")]
-    #[test_case("1_234", SimpleCharSetTokenKind::Integer, "1_234" ; "integer with underscores")]
-    #[test_case("1.234", SimpleCharSetTokenKind::Float, "1.234" ; "simple float")]
-    #[test_case(".234", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer")]
-    #[test_case("1.", SimpleCharSetTokenKind::Float, "1." ; "integer followed by dot")]
-    #[test_case("1.234.5", SimpleCharSetTokenKind::Float, "1.234" ; "float with extra dot")]
-    #[test_case(".234.5", SimpleCharSetTokenKind::Float, ".234" ; "float with no integer and extra dot")]
+    #[test_case("123", SimpleCharSetTokenKind::Number(NumberKind::Integer), "123" ; "integer")]
+    #[test_case("1_234", SimpleCharSetTokenKind::Number(NumberKind::Integer), "1_234" ; "integer with underscoreNumberKind")]
+    #[test_case("1.234", SimpleCharSetTokenKind::Number(NumberKind::Float), "1.234" ; "simple float")]
+    #[test_case(".234", SimpleCharSetTokenKind::Number(NumberKind::Float), ".234" ; "float with no integer")]
+    #[test_case("1.", SimpleCharSetTokenKind::Number(NumberKind::Float), "1." ; "integer followed by dot")]
+    #[test_case("1.234.5", SimpleCharSetTokenKind::Number(NumberKind::Float), "1.234" ; "float with extra dot")]
+    #[test_case(".234.5", SimpleCharSetTokenKind::Number(NumberKind::Float), ".234" ; "float with no integer and extra dot")]
     #[test_case(r#""abc\"\\\"\\""#, SimpleCharSetTokenKind::String, r#""abc\"\\\"\\""# ; "string")]
     #[test_case("(((", SimpleCharSetTokenKind::Tag, "(" ; "singleton")]
     fn lex_one(source: &str, kind: SimpleCharSetTokenKind, as_str: &str) {
@@ -537,7 +593,11 @@ mod tests {
             .collect::<Vec<Result<_, _>>>();
         assert_eq!(
             tokens,
-            &[Ok("abc".to_owned()), Err(()), Ok("def".to_owned())]
+            &[
+                Ok(Bytes::from_static("abc".as_bytes())),
+                Err(()),
+                Ok(Bytes::from_static("def".as_bytes()))
+            ]
         );
     }
 }

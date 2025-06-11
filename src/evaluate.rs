@@ -3,13 +3,13 @@ use crate::{
     Span,
 };
 
-pub trait Evaluator<B, U, T> {
+pub trait Evaluator<Idx, B, U, T> {
     type Value;
     type Error;
 
     fn evaluate_binary_operator(
         &self,
-        span: Span,
+        span: Span<Idx>,
         operator: B,
         lhs: Self::Value,
         rhs: Self::Value,
@@ -17,16 +17,16 @@ pub trait Evaluator<B, U, T> {
 
     fn evaluate_unary_operator(
         &self,
-        span: Span,
+        span: Span<Idx>,
         operator: U,
         argument: Self::Value,
     ) -> Result<Self::Value, Self::Error>;
 
-    fn evaluate_term(&self, span: Span, term: T) -> Result<Self::Value, Self::Error>;
+    fn evaluate_term(&self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error>;
 
     fn evaluate<I>(&self, input: I) -> Result<Self::Value, Self::Error>
     where
-        I: IntoIterator<Item = Expression<B, U, T>>,
+        I: IntoIterator<Item = Expression<Idx, B, U, T>>,
     {
         evaluate(self, input)
     }
@@ -38,10 +38,10 @@ pub trait Evaluator<B, U, T> {
 ///
 /// This function will panic if it encounters an operator and the stack does not contain enough
 /// values for the operator's arguments. It will also panic if the input is empty.
-pub fn evaluate<E, I, B, U, T>(evaluator: &E, input: I) -> Result<E::Value, E::Error>
+pub fn evaluate<E, I, Idx, B, U, T>(evaluator: &E, input: I) -> Result<E::Value, E::Error>
 where
-    E: Evaluator<B, U, T> + ?Sized,
-    I: IntoIterator<Item = Expression<B, U, T>>,
+    E: Evaluator<Idx, B, U, T> + ?Sized,
+    I: IntoIterator<Item = Expression<Idx, B, U, T>>,
 {
     const STACK_EMPTY: &str = "tried to pop from empty stack";
 
@@ -70,7 +70,7 @@ where
 /// are pure functions on that type that return `Result<Term, E>`
 pub struct PureEvaluator;
 
-impl<B, U, T, E> Evaluator<B, U, T> for PureEvaluator
+impl<Idx, B, U, T, E> Evaluator<Idx, B, U, T> for PureEvaluator
 where
     B: FnOnce(T, T) -> Result<T, E>,
     U: FnOnce(T) -> Result<T, E>,
@@ -80,7 +80,7 @@ where
 
     fn evaluate_binary_operator(
         &self,
-        _span: Span,
+        _span: Span<Idx>,
         operator: B,
         lhs: Self::Value,
         rhs: Self::Value,
@@ -90,14 +90,14 @@ where
 
     fn evaluate_unary_operator(
         &self,
-        _span: Span,
+        _span: Span<Idx>,
         operator: U,
         argument: Self::Value,
     ) -> Result<Self::Value, Self::Error> {
         operator(argument)
     }
 
-    fn evaluate_term(&self, _span: Span, term: T) -> Result<Self::Value, Self::Error> {
+    fn evaluate_term(&self, _span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error> {
         Ok(term)
     }
 }
@@ -165,7 +165,7 @@ mod tests {
         expression: [ExpressionKind<BinaryOperator, UnaryOperator, Term>; N],
         result: Result<Term, Error>,
     ) {
-        const EMPTY_SPAN: Span = Span::new(0..0);
+        const EMPTY_SPAN: Span<usize> = Span { start: 0, end: 0 };
         let actual = PureEvaluator.evaluate(expression.into_iter().map(|kind| Expression {
             kind,
             span: EMPTY_SPAN,
