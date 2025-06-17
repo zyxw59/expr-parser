@@ -8,7 +8,7 @@ pub trait Evaluator<Idx, B, U, T> {
     type Error;
 
     fn evaluate_binary_operator(
-        &self,
+        &mut self,
         span: Span<Idx>,
         operator: B,
         lhs: Self::Value,
@@ -16,15 +16,15 @@ pub trait Evaluator<Idx, B, U, T> {
     ) -> Result<Self::Value, Self::Error>;
 
     fn evaluate_unary_operator(
-        &self,
+        &mut self,
         span: Span<Idx>,
         operator: U,
         argument: Self::Value,
     ) -> Result<Self::Value, Self::Error>;
 
-    fn evaluate_term(&self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error>;
+    fn evaluate_term(&mut self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error>;
 
-    fn evaluate<I>(&self, input: I) -> Result<Self::Value, Self::Error>
+    fn evaluate<I>(&mut self, input: I) -> Result<Self::Value, Self::Error>
     where
         I: IntoIterator<Item = Expression<Idx, B, U, T>>,
     {
@@ -38,7 +38,7 @@ pub trait Evaluator<Idx, B, U, T> {
 ///
 /// This function will panic if it encounters an operator and the stack does not contain enough
 /// values for the operator's arguments. It will also panic if the input is empty.
-pub fn evaluate<E, I, Idx, B, U, T>(evaluator: &E, input: I) -> Result<E::Value, E::Error>
+pub fn evaluate<E, I, Idx, B, U, T>(evaluator: &mut E, input: I) -> Result<E::Value, E::Error>
 where
     E: Evaluator<Idx, B, U, T> + ?Sized,
     I: IntoIterator<Item = Expression<Idx, B, U, T>>,
@@ -79,7 +79,7 @@ where
     type Error = E;
 
     fn evaluate_binary_operator(
-        &self,
+        &mut self,
         _span: Span<Idx>,
         operator: B,
         lhs: Self::Value,
@@ -89,7 +89,7 @@ where
     }
 
     fn evaluate_unary_operator(
-        &self,
+        &mut self,
         _span: Span<Idx>,
         operator: U,
         argument: Self::Value,
@@ -97,7 +97,7 @@ where
         operator(argument)
     }
 
-    fn evaluate_term(&self, _span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error> {
+    fn evaluate_term(&mut self, _span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error> {
         Ok(term)
     }
 }
