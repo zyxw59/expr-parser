@@ -1,5 +1,6 @@
 use std::{
     convert::Infallible,
+    fmt,
     io::{self, BufRead},
     marker::PhantomData,
 };
@@ -322,10 +323,19 @@ pub enum NumberKind {
     Float,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimpleCharSetError {
-    #[error("unterminated string")]
     UnterminatedString,
+}
+
+impl std::error::Error for SimpleCharSetError {}
+
+impl fmt::Display for SimpleCharSetError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::UnterminatedString => f.write_str("unterminated string"),
+        }
+    }
 }
 
 impl From<Infallible> for SimpleCharSetError {
