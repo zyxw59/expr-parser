@@ -1,11 +1,13 @@
-use std::fmt;
+use std::{error::Error, fmt};
 
 use crate::{parser::Parser, token::Tokenizer, Span};
 
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug)]
 pub struct ParseErrors<P, T, Idx> {
     pub errors: Vec<ParseError<P, T, Idx>>,
 }
+
+impl<P, T, Idx> Error for ParseErrors<P, T, Idx> where Self: fmt::Debug + fmt::Display {}
 
 pub type ParseErrorsFor<P, T> = ParseErrors<
     <P as Parser<<T as Tokenizer>::Token>>::Error,
@@ -33,29 +35,58 @@ impl<P, T, Idx> From<Vec<ParseError<P, T, Idx>>> for ParseErrors<P, T, Idx> {
     }
 }
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-#[error("Parse error at {span}: {kind}")]
+#[derive(Clone, Copy, Debug)]
 pub struct ParseError<P, T, Idx> {
     pub span: Span<Idx>,
     pub kind: ParseErrorKind<P, T, Idx>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+impl<P, T, Idx> Error for ParseError<P, T, Idx> where Self: fmt::Debug + fmt::Display {}
+
+impl<P, T, Idx> fmt::Display for ParseError<P, T, Idx>
+where
+    Span<Idx>: fmt::Display,
+    ParseErrorKind<P, T, Idx>: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Parse error at {}: {}", self.span, self.kind)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParseErrorKind<P, T, Idx> {
-    #[error("Unexpected end of input (expected {expected})")]
     EndOfInput { expected: &'static str },
-    #[error("Unexpected token (expected {expected})")]
     UnexpectedToken { expected: &'static str },
-    #[error("Mismatched closing delimiter (opening {opening})")]
     MismatchedDelimiter { opening: Span<Idx> },
-    #[error("Unmatched closing delimiter")]
     UnmatchedRightDelimiter,
-    #[error("Unmatched opening delimiter")]
     UnmatchedLeftDelimiter,
-    #[error(transparent)]
     Parser(P),
-    #[error(transparent)]
     Tokenizer(T),
+}
+
+impl<P, T, Idx> fmt::Display for ParseErrorKind<P, T, Idx>
+where
+    P: fmt::Display,
+    T: fmt::Display,
+    Idx: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::EndOfInput { expected } => {
+                write!(f, "Unexpected end of input (expected {expected})")
+            }
+            Self::UnexpectedToken { expected } => {
+                write!(f, "Unexpected token (expected {expected})")
+            }
+            Self::MismatchedDelimiter { opening } => {
+                write!(f, "Mismatched closing delimiter (opening {opening})")
+            }
+            Self::UnmatchedRightDelimiter => f.write_str("Unmatched closing delimiter"),
+            Self::UnmatchedLeftDelimiter => f.write_str("Unmatched opening delimiter"),
+            Self::Parser(err) => fmt::Display::fmt(err, f),
+            Self::Tokenizer(err) => fmt::Display::fmt(err, f),
+        }
+    }
 }
 
 impl<P, T, Idx> ParseErrorKind<P, T, Idx> {
