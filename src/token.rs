@@ -237,7 +237,7 @@ impl<R: BufRead> BufReadSource<R> {
         }
     }
 
-    fn flil_buf(&mut self) -> io::Result<()> {
+    fn fill_buf(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
             match self.reader.read_until(b'\n', &mut self.line_buffer) {
                 Ok(0) => self.is_empty = true,
@@ -273,7 +273,7 @@ impl<R: BufRead> Source for BufReadSource<R> {
     ) -> Result<Self::String, io::Error> {
         let mut token = self.buffer.split_to(0);
         while !self.is_empty {
-            self.flil_buf()?;
+            self.fill_buf()?;
             let buffer = &self.buffer;
             let offset = buffer
                 .char_indices()
