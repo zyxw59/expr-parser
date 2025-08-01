@@ -663,7 +663,10 @@ mod tests {
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
         operator::Fixity,
-        token::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource, Tokenizer},
+        token::{
+            charset::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource},
+            Tokenizer,
+        },
     };
 
     struct SimpleExprContext;
