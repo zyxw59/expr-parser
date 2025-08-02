@@ -858,6 +858,8 @@ mod tests {
                     },
                 },
                 _ => {
+                    // variables get implicit multiplication, other tokens don't (so that we can
+                    // test unexpected token errors)
                     let postfix = if let SimpleCharSetTokenKind::Tag = kind {
                         Postfix::ImplicitOperator {
                             fixity: Fixity::Left(SimplePrecedence::Multiplicative),
