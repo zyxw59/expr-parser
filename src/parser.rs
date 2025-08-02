@@ -104,8 +104,16 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         self.end_of_input = token.span.end.clone();
         match self.parser.parse_token(token.kind) {
             Ok(element) => match self.state {
-                State::PostOperator => self.parse_term(token.span, element),
-                State::PostTerm => self.parse_operator(token.span, element),
+                State::PostOperator => {
+                    if self.parse_term(token.span.clone(), element.prefix) {
+                        self.parse_operator(token.span, element.postfix);
+                    }
+                }
+                State::PostTerm => {
+                    if self.parse_operator(token.span.clone(), element.postfix) {
+                        self.parse_term(token.span, element.prefix);
+                    }
+                }
             },
             Err(error) => {
                 self.errors.push(ParseError {
@@ -192,8 +200,8 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         }
     }
 
-    fn parse_term(&mut self, span: Span<Idx>, element: ParserElement<P, T>) {
-        match element.prefix {
+    fn parse_term(&mut self, span: Span<Idx>, prefix: ParserPrefix<P, T>) -> bool {
+        match prefix {
             Prefix::LeftDelimiter {
                 delimiter,
                 operator,
@@ -205,9 +213,11 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                     operator: StackOperator::unary_delimiter(operator, empty),
                 });
                 self.state = State::PostOperator;
+                false
             }
             Prefix::RightDelimiter { delimiter } => {
                 self.process_right_delimiter(span, delimiter);
+                false
             }
             Prefix::UnaryOperator {
                 precedence,
@@ -223,6 +233,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                     },
                 });
                 self.state = State::PostOperator;
+                false
             }
             Prefix::Term { term } => {
                 self.state = State::PostTerm;
@@ -230,6 +241,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                     span,
                     kind: ExpressionKind::Term(term),
                 });
+                false
             }
             Prefix::None => {
                 self.state = State::PostTerm;
@@ -248,14 +260,17 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                         });
                     };
                 }
-                self.parse_operator(span, element);
+                true
             }
         }
     }
 
-    fn parse_operator(&mut self, span: Span<Idx>, element: ParserElement<P, T>) {
-        match element.postfix {
-            Postfix::RightDelimiter { delimiter } => self.process_right_delimiter(span, delimiter),
+    fn parse_operator(&mut self, span: Span<Idx>, postfix: ParserPostfix<P, T>) -> bool {
+        match postfix {
+            Postfix::RightDelimiter { delimiter } => {
+                self.process_right_delimiter(span, delimiter);
+                false
+            }
             Postfix::BinaryOperator {
                 fixity,
                 operator,
@@ -263,11 +278,19 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             } => {
                 self.state = State::PostOperator;
                 self.process_binary_operator(span, fixity, operator, no_rhs);
+                false
+            }
+            Postfix::ImplicitOperator { fixity, operator } => {
+                self.process_binary_operator(span.clone(), fixity, operator, None);
+                true
             }
             Postfix::PostfixOperator {
                 precedence,
                 operator,
-            } => self.process_postfix_operator(span, precedence, operator),
+            } => {
+                self.process_postfix_operator(span, precedence, operator);
+                false
+            }
             Postfix::LeftDelimiter {
                 delimiter,
                 operator,
@@ -288,16 +311,17 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                         unary: empty,
                     },
                 });
+                false
             }
             Postfix::None => {
                 self.state = State::PostOperator;
-                // TODO(#11) here is where we would support implicit operators
                 self.errors.push(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
                         expected: EXPECT_OPERATOR,
                     },
                     span,
                 });
+                true
             }
         }
     }
@@ -491,6 +515,13 @@ pub enum Prefix<P, D, U, T> {
     None,
 }
 
+type ParserPrefix<P, T> = Prefix<
+    <P as Parser<T>>::Precedence,
+    <P as Parser<T>>::Delimiter,
+    <P as Parser<T>>::UnaryOperator,
+    <P as Parser<T>>::Term,
+>;
+
 pub enum Postfix<P, D, B, U> {
     BinaryOperator {
         fixity: Fixity<P>,
@@ -509,8 +540,19 @@ pub enum Postfix<P, D, B, U> {
     RightDelimiter {
         delimiter: D,
     },
+    ImplicitOperator {
+        fixity: Fixity<P>,
+        operator: B,
+    },
     None,
 }
+
+type ParserPostfix<P, T> = Postfix<
+    <P as Parser<T>>::Precedence,
+    <P as Parser<T>>::Delimiter,
+    <P as Parser<T>>::BinaryOperator,
+    <P as Parser<T>>::UnaryOperator,
+>;
 
 pub enum StackOrder<P, D> {
     Precedence(P),
@@ -706,7 +748,7 @@ mod tests {
 
         fn parse_token(
             &self,
-            (s, _kind): (&'s str, SimpleCharSetTokenKind),
+            (s, kind): (&'s str, SimpleCharSetTokenKind),
         ) -> Result<
             Element<
                 Self::Precedence,
@@ -815,10 +857,22 @@ mod tests {
                         operator: s,
                     },
                 },
-                _ => Element {
-                    prefix: Prefix::Term { term: s },
-                    postfix: Postfix::None,
-                },
+                _ => {
+                    // variables get implicit multiplication, other tokens don't (so that we can
+                    // test unexpected token errors)
+                    let postfix = if let SimpleCharSetTokenKind::Tag = kind {
+                        Postfix::ImplicitOperator {
+                            fixity: Fixity::Left(SimplePrecedence::Multiplicative),
+                            operator: "{*}",
+                        }
+                    } else {
+                        Postfix::None
+                    };
+                    Element {
+                        prefix: Prefix::Term { term: s },
+                        postfix,
+                    }
+                }
             })
         }
     }
@@ -843,6 +897,7 @@ mod tests {
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , (,) [" ; "trailing comma" )]
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
+    #[test_case("5x^2", "5 x 2 ^ {*}" ; "implicit operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = parse(
             SimpleTokenizer::new(StrSource::new(input)),
@@ -905,9 +960,9 @@ mod tests {
 
     #[test_case("1 )", &[(ParseErrorKind::UnmatchedRightDelimiter, 2..3)] ; "unmatched right paren" )]
     #[test_case("1 +", &[(ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 3..3)] ; "end of input" )]
-    #[test_case("(5 5", &[
+    #[test_case("(5 5 +", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_OPERATOR }, 3..4),
-        (ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 4..4),
+        (ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 6..6),
         (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
     ] ; "multiple errors")]
     #[test_case("[ 1 )", &[
