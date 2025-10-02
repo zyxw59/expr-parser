@@ -15,7 +15,7 @@ pub fn parse<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P
 where
     P: Parser<T::Token>,
     T: Tokenizer,
-    Q: ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Default + ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
@@ -32,7 +32,7 @@ pub fn parse_one_term<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseEr
 where
     P: Parser<T::Token>,
     T: Tokenizer,
-    Q: ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Default + ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
@@ -44,7 +44,7 @@ where
     state.finish()
 }
 
-pub trait ExpressionQueue<Idx, B, U, T>: Default {
+pub trait ExpressionQueue<Idx, B, U, T> {
     fn push_expr(&mut self, expr: Expression<Idx, B, U, T>);
 }
 
@@ -77,7 +77,7 @@ impl<T, TokErr, Idx, P, Q> ParseState<T, TokErr, Idx, P, Q>
 where
     Idx: Default + Clone,
     P: Parser<T>,
-    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Default + ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     pub fn new(parser: P) -> Self {
         Self {
@@ -89,7 +89,14 @@ where
             errors: Vec::new(),
         }
     }
+}
 
+impl<T, TokErr, Idx, P, Q> ParseState<T, TokErr, Idx, P, Q>
+where
+    Idx: Default + Clone,
+    P: Parser<T>,
+    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+{
     pub fn parse_result(&mut self, result: Result<Token<T, Idx>, TokErr>) {
         match result {
             Err(e) => self.errors.push(ParseError {
