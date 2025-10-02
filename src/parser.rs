@@ -154,7 +154,6 @@ where
         !self.errors.is_empty()
     }
 
-    #[allow(clippy::type_complexity)]
     pub fn finish(mut self) -> Result<Q, ParseErrors<P::Error, TokErr, Idx>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
@@ -701,7 +700,7 @@ impl<B, U, T> StackOperator<B, U, T> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::type_complexity)]
+    #![expect(clippy::type_complexity)]
 
     use std::{convert::Infallible, ops::Range};
 
