@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseErrorsFor},
     expression::{Expression, ExpressionKind},
@@ -9,13 +11,11 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<T, P>(
-    mut tokenizer: T,
-    parser: P,
-) -> Result<ExpressionQueueFor<P, T>, ParseErrorsFor<P, T>>
+pub fn parse<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
+    Q: ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
@@ -28,13 +28,11 @@ where
 ///
 /// This means zero or more prefix operators followed by either a term token or a delimited
 /// group.
-pub fn parse_one_term<T, P>(
-    mut tokenizer: T,
-    parser: P,
-) -> Result<ExpressionQueueFor<P, T>, ParseErrorsFor<P, T>>
+pub fn parse_one_term<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
+    Q: ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
@@ -46,41 +44,48 @@ where
     state.finish()
 }
 
-pub type ExpressionQueueFor<P, T> = Vec<
-    Expression<
-        <T as Tokenizer>::Position,
-        <P as Parser<<T as Tokenizer>::Token>>::BinaryOperator,
-        <P as Parser<<T as Tokenizer>::Token>>::UnaryOperator,
-        <P as Parser<<T as Tokenizer>::Token>>::Term,
-    >,
->;
+pub trait ExpressionQueue<Idx, B, U, T>: Default {
+    fn push_expr(&mut self, expr: Expression<Idx, B, U, T>);
+}
 
-pub type ExpressionQueue<T, Idx, P> = Vec<
-    Expression<
-        Idx,
-        <P as Parser<T>>::BinaryOperator,
-        <P as Parser<T>>::UnaryOperator,
-        <P as Parser<T>>::Term,
-    >,
->;
+impl<Idx, B, U, T> ExpressionQueue<Idx, B, U, T> for Vec<Expression<Idx, B, U, T>> {
+    fn push_expr(&mut self, expr: Expression<Idx, B, U, T>) {
+        self.push(expr);
+    }
+}
 
-pub struct ParseState<T, TokErr, Idx, P: Parser<T>> {
+impl<Idx, B, U, T> ExpressionQueue<Idx, B, U, T> for VecDeque<Expression<Idx, B, U, T>> {
+    fn push_expr(&mut self, expr: Expression<Idx, B, U, T>) {
+        if matches!(expr.kind, ExpressionKind::Term(..)) {
+            self.push_back(expr);
+        } else {
+            self.push_front(expr);
+        }
+    }
+}
+
+pub struct ParseState<T, TokErr, Idx, P: Parser<T>, Q> {
     parser: P,
     end_of_input: Idx,
     state: State,
     stack: Stack<T, Idx, P>,
-    queue: ExpressionQueue<T, Idx, P>,
+    queue: Q,
     errors: Vec<ParseError<P::Error, TokErr, Idx>>,
 }
 
-impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P> {
+impl<T, TokErr, Idx, P, Q> ParseState<T, TokErr, Idx, P, Q>
+where
+    Idx: Default + Clone,
+    P: Parser<T>,
+    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+{
     pub fn new(parser: P) -> Self {
         Self {
             parser,
             end_of_input: Default::default(),
             state: State::PostOperator,
             stack: Stack::new(),
-            queue: Vec::new(),
+            queue: Default::default(),
             errors: Vec::new(),
         }
     }
@@ -150,13 +155,11 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn finish(
-        mut self,
-    ) -> Result<ExpressionQueue<T, Idx, P>, ParseErrors<P::Error, TokErr, Idx>> {
+    pub fn finish(mut self) -> Result<Q, ParseErrors<P::Error, TokErr, Idx>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.push(Expression {
+                    self.queue.push_expr(Expression {
                         kind,
                         span: el.span.clone(),
                     });
@@ -181,7 +184,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         }
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push(Expression {
+                self.queue.push_expr(Expression {
                     kind,
                     span: el.span.clone(),
                 });
@@ -237,7 +240,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
             }
             Prefix::Term { term } => {
                 self.state = State::PostTerm;
-                self.queue.push(Expression {
+                self.queue.push_expr(Expression {
                     span,
                     kind: ExpressionKind::Term(term),
                 });
@@ -247,7 +250,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
                 self.state = State::PostTerm;
                 if let Some(el) = self.stack.pop() {
                     if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                        self.queue.push(Expression {
+                        self.queue.push_expr(Expression {
                             kind,
                             span: el.span,
                         });
@@ -334,7 +337,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.push(Expression {
+                    self.queue.push_expr(Expression {
                         kind,
                         span: el.span.clone(),
                     });
@@ -356,7 +359,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         self.state = State::PostTerm;
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push(Expression {
+                self.queue.push_expr(Expression {
                     kind,
                     span: el.span.clone(),
                 });
@@ -411,7 +414,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
         self.pop_while_lower_precedence(&fixity);
-        self.queue.push(Expression {
+        self.queue.push_expr(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
         });
@@ -420,7 +423,7 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
     fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push(Expression {
+                self.queue.push_expr(Expression {
                     kind,
                     span: el.span,
                 });
@@ -429,8 +432,11 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> ParseState<T, TokErr, Idx, P
     }
 }
 
-impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> Extend<Token<T, Idx>>
-    for ParseState<T, TokErr, Idx, P>
+impl<T, TokErr, Idx, P, Q> Extend<Token<T, Idx>> for ParseState<T, TokErr, Idx, P, Q>
+where
+    Idx: Default + Clone,
+    P: Parser<T>,
+    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     fn extend<I>(&mut self, iter: I)
     where
@@ -440,8 +446,12 @@ impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> Extend<Token<T, Idx>>
     }
 }
 
-impl<T, TokErr, Idx: Default + Clone, P: Parser<T>> Extend<Result<Token<T, Idx>, TokErr>>
-    for ParseState<T, TokErr, Idx, P>
+impl<T, TokErr, Idx, P, Q> Extend<Result<Token<T, Idx>, TokErr>>
+    for ParseState<T, TokErr, Idx, P, Q>
+where
+    Idx: Default + Clone,
+    P: Parser<T>,
+    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
 {
     fn extend<I>(&mut self, iter: I)
     where
@@ -899,7 +909,7 @@ mod tests {
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     #[test_case("5x^2", "5 x 2 ^ {*}" ; "implicit operator" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
-        let actual = parse(
+        let actual = parse::<_, _, Vec<_>>(
             SimpleTokenizer::new(StrSource::new(input)),
             SimpleExprContext,
         )?
@@ -920,7 +930,7 @@ mod tests {
     #[test_case("abc def)", "abc", "def)" ; "ignores invalid after first term" )]
     fn parse_one(input: &str, output: &str, rest: &str) -> anyhow::Result<()> {
         let mut tokens = SimpleTokenizer::new(StrSource::new(input));
-        let actual = parse_one_term(&mut tokens, SimpleExprContext)?
+        let actual = parse_one_term::<_, _, Vec<_>>(&mut tokens, SimpleExprContext)?
             .into_iter()
             .map(expr_to_str)
             .collect::<Vec<_>>();
@@ -945,7 +955,7 @@ mod tests {
     #[test_case("3,", true ; "binary with optional rhs")]
     fn is_complete(input: &str, is_complete: bool) -> anyhow::Result<()> {
         let mut tokens = SimpleTokenizer::new(StrSource::new(input));
-        let mut state = ParseState::new(SimpleExprContext);
+        let mut state = ParseState::<_, _, _, _, Vec<_>>::new(SimpleExprContext);
         while let Some(t) = tokens.next_token() {
             state.parse_result(t);
         }
@@ -983,7 +993,7 @@ mod tests {
         input: &str,
         expected: &[(ParseErrorKind<Infallible, Infallible, usize>, Range<usize>)],
     ) {
-        let actual = parse(
+        let actual = parse::<_, _, Vec<_>>(
             SimpleTokenizer::new(StrSource::new(input)),
             SimpleExprContext,
         )
