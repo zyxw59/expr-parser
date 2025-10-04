@@ -9,13 +9,26 @@ use crate::{
 const EXPECT_TERM: &str = "literal, variable, unary operator, or delimiter";
 const EXPECT_OPERATOR: &str = "binary operator, delimiter, postfix operator, or end of input";
 
-pub fn parse<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P, T>>
+pub fn parse<T, P, Q>(tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
     Q: Default + Extend<Expression<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
-    let mut state = ParseState::new(parser);
+    parse_into(tokenizer, parser, Q::default())
+}
+
+pub fn parse_into<T, P, Q>(
+    mut tokenizer: T,
+    parser: P,
+    output: Q,
+) -> Result<Q, ParseErrorsFor<P, T>>
+where
+    P: Parser<T::Token>,
+    T: Tokenizer,
+    Q: Extend<Expression<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>>,
+{
+    let mut state = ParseState::with_output(parser, output);
     while let Some(token) = tokenizer.next_token() {
         state.parse_result(token);
     }
@@ -26,13 +39,30 @@ where
 ///
 /// This means zero or more prefix operators followed by either a term token or a delimited
 /// group.
-pub fn parse_one_term<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P, T>>
+pub fn parse_one_term<T, P, Q>(tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P, T>>
 where
     P: Parser<T::Token>,
     T: Tokenizer,
     Q: Default + Extend<Expression<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
-    let mut state = ParseState::new(parser);
+    parse_one_term_into(tokenizer, parser, Q::default())
+}
+
+/// Parses until a single term has been completed.
+///
+/// This means zero or more prefix operators followed by either a term token or a delimited
+/// group.
+pub fn parse_one_term_into<T, P, Q>(
+    mut tokenizer: T,
+    parser: P,
+    output: Q,
+) -> Result<Q, ParseErrorsFor<P, T>>
+where
+    P: Parser<T::Token>,
+    T: Tokenizer,
+    Q: Extend<Expression<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>>,
+{
+    let mut state = ParseState::with_output(parser, output);
     while let Some(token) = tokenizer.next_token() {
         state.parse_result(token);
         if state.has_parsed_expression() {
