@@ -25,6 +25,8 @@ pub trait Evaluator<Idx, B, U, T> {
     fn evaluate_term(&mut self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error>;
 }
 
+/// A wrapper around an [`Evaluator`] that implements [`Extend`] by evaluating every item as it
+/// comes in.
 pub struct ImmediateEvaluator<'e, E: ?Sized, V, Error> {
     evaluator: &'e mut E,
     stack: Vec<V>,
@@ -42,6 +44,11 @@ impl<'e, E: ?Sized, V, Error> ImmediateEvaluator<'e, E, V, Error> {
         }
     }
 
+    /// Complete the evaluation and return the final result.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if there is not at least one value on the stack.
     pub fn finish(mut self) -> Result<V, Error> {
         if let Some(err) = self.error {
             Err(err)
@@ -56,12 +63,15 @@ impl<E, Idx, B, U, T> Extend<Expression<Idx, B, U, T>>
 where
     E: Evaluator<Idx, B, U, T> + ?Sized,
 {
-    /// Evaluate the expressions from the iterator
+    /// Evaluate the expressions from the iterator.
+    ///
+    /// If the evaluation returns an error, the error will be stored and the evaluation will stop
+    /// without consuming any more expressions from the iterator.
     ///
     /// # Panics
     ///
     /// This function will panic if it encounters an operator and the stack does not contain enough
-    /// values for the operator's arguments. It will also panic if the input is empty.
+    /// values for the operator's arguments.
     fn extend<It>(&mut self, iter: It)
     where
         It: IntoIterator<Item = Expression<Idx, B, U, T>>,
