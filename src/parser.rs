@@ -13,7 +13,7 @@ pub fn parse<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseErrorsFor<P
 where
     P: Parser<T::Token>,
     T: Tokenizer,
-    Q: Default + ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Default + Extend<Expression<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
@@ -30,7 +30,7 @@ pub fn parse_one_term<T, P, Q>(mut tokenizer: T, parser: P) -> Result<Q, ParseEr
 where
     P: Parser<T::Token>,
     T: Tokenizer,
-    Q: Default + ExpressionQueue<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Default + Extend<Expression<T::Position, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     let mut state = ParseState::new(parser);
     while let Some(token) = tokenizer.next_token() {
@@ -40,16 +40,6 @@ where
         }
     }
     state.finish()
-}
-
-pub trait ExpressionQueue<Idx, B, U, T> {
-    fn push_expr(&mut self, expr: Expression<Idx, B, U, T>);
-}
-
-impl<Idx, B, U, T> ExpressionQueue<Idx, B, U, T> for Vec<Expression<Idx, B, U, T>> {
-    fn push_expr(&mut self, expr: Expression<Idx, B, U, T>) {
-        self.push(expr);
-    }
 }
 
 pub struct ParseState<T, TokErr, Idx, P: Parser<T>, Q> {
@@ -65,7 +55,7 @@ impl<T, TokErr, Idx, P, Q> ParseState<T, TokErr, Idx, P, Q>
 where
     Idx: Default + Clone,
     P: Parser<T>,
-    Q: Default + ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Default + Extend<Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     pub fn new(parser: P) -> Self {
         Self {
@@ -83,7 +73,7 @@ impl<T, TokErr, Idx, P, Q> ParseState<T, TokErr, Idx, P, Q>
 where
     Idx: Default + Clone,
     P: Parser<T>,
-    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Extend<Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     pub fn parse_result(&mut self, result: Result<Token<T, Idx>, TokErr>) {
         match result {
@@ -153,10 +143,10 @@ where
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.push_expr(Expression {
+                    self.queue.extend(Some(Expression {
                         kind,
                         span: el.span.clone(),
-                    });
+                    }));
                 } else {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::EndOfInput {
@@ -178,10 +168,10 @@ where
         }
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push_expr(Expression {
+                self.queue.extend(Some(Expression {
                     kind,
                     span: el.span.clone(),
-                });
+                }));
             }
             if el.order.is_delimiter() {
                 self.errors.push(ParseError {
@@ -234,20 +224,20 @@ where
             }
             Prefix::Term { term } => {
                 self.state = State::PostTerm;
-                self.queue.push_expr(Expression {
+                self.queue.extend(Some(Expression {
                     span,
                     kind: ExpressionKind::Term(term),
-                });
+                }));
                 false
             }
             Prefix::None => {
                 self.state = State::PostTerm;
                 if let Some(el) = self.stack.pop() {
                     if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                        self.queue.push_expr(Expression {
+                        self.queue.extend(Some(Expression {
                             kind,
                             span: el.span,
-                        });
+                        }));
                     } else {
                         self.errors.push(ParseError {
                             kind: ParseErrorKind::UnexpectedToken {
@@ -331,10 +321,10 @@ where
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.push_expr(Expression {
+                    self.queue.extend(Some(Expression {
                         kind,
                         span: el.span.clone(),
-                    });
+                    }));
                 } else {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::UnexpectedToken {
@@ -353,10 +343,10 @@ where
         self.state = State::PostTerm;
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push_expr(Expression {
+                self.queue.extend(Some(Expression {
                     kind,
                     span: el.span.clone(),
-                });
+                }));
             }
             if let StackOrder::Delimiter(left) = el.order {
                 self.check_delimiter_match(left, el.span, right, span);
@@ -408,19 +398,19 @@ where
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
         self.pop_while_lower_precedence(&fixity);
-        self.queue.push_expr(Expression {
+        self.queue.extend(Some(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
-        });
+        }));
     }
 
     fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.push_expr(Expression {
+                self.queue.extend(Some(Expression {
                     kind,
                     span: el.span,
-                });
+                }));
             }
         }
     }
@@ -430,7 +420,7 @@ impl<T, TokErr, Idx, P, Q> Extend<Token<T, Idx>> for ParseState<T, TokErr, Idx, 
 where
     Idx: Default + Clone,
     P: Parser<T>,
-    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Extend<Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     fn extend<I>(&mut self, iter: I)
     where
@@ -445,7 +435,7 @@ impl<T, TokErr, Idx, P, Q> Extend<Result<Token<T, Idx>, TokErr>>
 where
     Idx: Default + Clone,
     P: Parser<T>,
-    Q: ExpressionQueue<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    Q: Extend<Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     fn extend<I>(&mut self, iter: I)
     where
