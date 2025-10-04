@@ -25,18 +25,49 @@ pub trait Evaluator<Idx, B, U, T> {
     fn evaluate_term(&mut self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error>;
 }
 
+impl<E, Idx, B, U, T> Evaluator<Idx, B, U, T> for &'_ mut E
+where
+    E: Evaluator<Idx, B, U, T> + ?Sized,
+{
+    type Value = E::Value;
+    type Error = E::Error;
+
+    fn evaluate_binary_operator(
+        &mut self,
+        span: Span<Idx>,
+        operator: B,
+        lhs: Self::Value,
+        rhs: Self::Value,
+    ) -> Result<Self::Value, Self::Error> {
+        E::evaluate_binary_operator(self, span, operator, lhs, rhs)
+    }
+
+    fn evaluate_unary_operator(
+        &mut self,
+        span: Span<Idx>,
+        operator: U,
+        argument: Self::Value,
+    ) -> Result<Self::Value, Self::Error> {
+        E::evaluate_unary_operator(self, span, operator, argument)
+    }
+
+    fn evaluate_term(&mut self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error> {
+        E::evaluate_term(self, span, term)
+    }
+}
+
 /// A wrapper around an [`Evaluator`] that implements [`Extend`] by evaluating every item as it
 /// comes in.
-pub struct ImmediateEvaluator<'e, E: ?Sized, V, Error> {
-    evaluator: &'e mut E,
+pub struct ImmediateEvaluator<E, V, Error> {
+    evaluator: E,
     stack: Vec<V>,
     error: Option<Error>,
 }
 
-impl<'e, E: ?Sized, V, Error> ImmediateEvaluator<'e, E, V, Error> {
+impl<E, V, Error> ImmediateEvaluator<E, V, Error> {
     const STACK_EMPTY: &'static str = "tried to pop from empty stack";
 
-    pub fn new(evaluator: &'e mut E) -> Self {
+    pub fn new(evaluator: E) -> Self {
         Self {
             evaluator,
             stack: Vec::new(),
@@ -58,10 +89,9 @@ impl<'e, E: ?Sized, V, Error> ImmediateEvaluator<'e, E, V, Error> {
     }
 }
 
-impl<E, Idx, B, U, T> Extend<Expression<Idx, B, U, T>>
-    for ImmediateEvaluator<'_, E, E::Value, E::Error>
+impl<E, Idx, B, U, T> Extend<Expression<Idx, B, U, T>> for ImmediateEvaluator<E, E::Value, E::Error>
 where
-    E: Evaluator<Idx, B, U, T> + ?Sized,
+    E: Evaluator<Idx, B, U, T>,
 {
     /// Evaluate the expressions from the iterator.
     ///
@@ -123,9 +153,9 @@ where
 ///
 /// This function will panic if it encounters an operator and the stack does not contain enough
 /// values for the operator's arguments. It will also panic if the input is empty.
-pub fn evaluate<E, I, Idx, B, U, T>(evaluator: &mut E, input: I) -> Result<E::Value, E::Error>
+pub fn evaluate<E, I, Idx, B, U, T>(evaluator: E, input: I) -> Result<E::Value, E::Error>
 where
-    E: Evaluator<Idx, B, U, T> + ?Sized,
+    E: Evaluator<Idx, B, U, T>,
     I: IntoIterator<Item = Expression<Idx, B, U, T>>,
 {
     let mut evaluator = ImmediateEvaluator::new(evaluator);
@@ -299,7 +329,7 @@ mod tests {
     ) {
         const EMPTY_SPAN: Span<usize> = Span { start: 0, end: 0 };
         let actual = evaluate(
-            &mut PureEvaluator,
+            PureEvaluator,
             expression.into_iter().map(|kind| Expression {
                 kind,
                 span: EMPTY_SPAN,
