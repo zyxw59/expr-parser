@@ -23,13 +23,6 @@ pub trait Evaluator<Idx, B, U, T> {
     ) -> Result<Self::Value, Self::Error>;
 
     fn evaluate_term(&mut self, span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error>;
-
-    fn evaluate<I>(&mut self, input: I) -> Result<Self::Value, Self::Error>
-    where
-        I: IntoIterator<Item = Expression<Idx, B, U, T>>,
-    {
-        evaluate(self, input)
-    }
 }
 
 pub struct ImmediateEvaluator<'e, E: ?Sized, V, Error> {
@@ -235,7 +228,7 @@ pub enum ExpressionNode<Idx, B, U, T> {
 mod tests {
     use test_case::test_case;
 
-    use super::{Evaluator, PureEvaluator};
+    use super::{evaluate, PureEvaluator};
     use crate::{
         expression::{Expression, ExpressionKind},
         Span,
@@ -295,10 +288,13 @@ mod tests {
         result: Result<Term, Error>,
     ) {
         const EMPTY_SPAN: Span<usize> = Span { start: 0, end: 0 };
-        let actual = PureEvaluator.evaluate(expression.into_iter().map(|kind| Expression {
-            kind,
-            span: EMPTY_SPAN,
-        }));
+        let actual = evaluate(
+            &mut PureEvaluator,
+            expression.into_iter().map(|kind| Expression {
+                kind,
+                span: EMPTY_SPAN,
+            }),
+        );
 
         assert_eq!(actual, result);
     }
