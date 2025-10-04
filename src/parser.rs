@@ -58,14 +58,7 @@ where
     Q: Default + Extend<Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
     pub fn new(parser: P) -> Self {
-        Self {
-            parser,
-            end_of_input: Default::default(),
-            state: State::PostOperator,
-            stack: Stack::new(),
-            queue: Default::default(),
-            errors: Vec::new(),
-        }
+        Self::with_output(parser, Q::default())
     }
 }
 
@@ -75,6 +68,17 @@ where
     P: Parser<T>,
     Q: Extend<Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>>,
 {
+    pub fn with_output(parser: P, output: Q) -> Self {
+        Self {
+            parser,
+            end_of_input: Default::default(),
+            state: State::PostOperator,
+            stack: Stack::new(),
+            queue: output,
+            errors: Vec::new(),
+        }
+    }
+
     pub fn parse_result(&mut self, result: Result<Token<T, Idx>, TokErr>) {
         match result {
             Err(e) => self.errors.push(ParseError {
