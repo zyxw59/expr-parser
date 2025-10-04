@@ -130,7 +130,7 @@ where
     evaluator.finish()
 }
 
-/// An `Evaluator` whose `Value` type is the same as its `Term` type, and whose operators
+/// An [`Evaluator`] whose `Value` type is the same as its `Term` type, and whose operators
 /// are pure functions on that type that return `Result<Term, E>`
 pub struct PureEvaluator;
 
@@ -164,6 +164,71 @@ where
     fn evaluate_term(&mut self, _span: Span<Idx>, term: T) -> Result<Self::Value, Self::Error> {
         Ok(term)
     }
+}
+
+/// An [`Evaluator`] which simply collects its expressions into an abstract syntax tree.
+pub struct TreeEvaluator;
+
+impl<Idx, B, U, T> Evaluator<Idx, B, U, T> for TreeEvaluator {
+    type Value = ExpressionTree<Idx, B, U, T>;
+    type Error = std::convert::Infallible;
+
+    fn evaluate_binary_operator(
+        &mut self,
+        span: Span<Idx>,
+        operator: B,
+        left: Self::Value,
+        right: Self::Value,
+    ) -> Result<Self::Value, Self::Error> {
+        Ok(ExpressionTree {
+            span,
+            node: Box::new(ExpressionNode::Binary {
+                operator,
+                left,
+                right,
+            }),
+        })
+    }
+
+    fn evaluate_unary_operator(
+        &mut self,
+        span: Span<Idx>,
+        operator: U,
+        argument: Self::Value,
+    ) -> Result<Self::Value, Self::Error> {
+        Ok(ExpressionTree {
+            span,
+            node: Box::new(ExpressionNode::Unary { operator, argument }),
+        })
+    }
+
+    fn evaluate_term(&mut self, span: Span<Idx>, value: T) -> Result<Self::Value, Self::Error> {
+        Ok(ExpressionTree {
+            span,
+            node: Box::new(ExpressionNode::Term { value }),
+        })
+    }
+}
+
+/// An abstract syntax tree representing an expression
+pub struct ExpressionTree<Idx, B, U, T> {
+    pub span: Span<Idx>,
+    pub node: Box<ExpressionNode<Idx, B, U, T>>,
+}
+
+pub enum ExpressionNode<Idx, B, U, T> {
+    Binary {
+        operator: B,
+        left: ExpressionTree<Idx, B, U, T>,
+        right: ExpressionTree<Idx, B, U, T>,
+    },
+    Unary {
+        operator: U,
+        argument: ExpressionTree<Idx, B, U, T>,
+    },
+    Term {
+        value: T,
+    },
 }
 
 #[cfg(test)]
