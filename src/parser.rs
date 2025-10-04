@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseErrorsFor},
     expression::{Expression, ExpressionKind},
@@ -51,16 +49,6 @@ pub trait ExpressionQueue<Idx, B, U, T> {
 impl<Idx, B, U, T> ExpressionQueue<Idx, B, U, T> for Vec<Expression<Idx, B, U, T>> {
     fn push_expr(&mut self, expr: Expression<Idx, B, U, T>) {
         self.push(expr);
-    }
-}
-
-impl<Idx, B, U, T> ExpressionQueue<Idx, B, U, T> for VecDeque<Expression<Idx, B, U, T>> {
-    fn push_expr(&mut self, expr: Expression<Idx, B, U, T>) {
-        if matches!(expr.kind, ExpressionKind::Term(..)) {
-            self.push_back(expr);
-        } else {
-            self.push_front(expr);
-        }
     }
 }
 
