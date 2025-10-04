@@ -32,6 +32,88 @@ pub trait Evaluator<Idx, B, U, T> {
     }
 }
 
+pub struct ImmediateEvaluator<'e, E: ?Sized, V, Error> {
+    evaluator: &'e mut E,
+    stack: Vec<V>,
+    error: Option<Error>,
+}
+
+impl<'e, E: ?Sized, V, Error> ImmediateEvaluator<'e, E, V, Error> {
+    const STACK_EMPTY: &'static str = "tried to pop from empty stack";
+
+    pub fn new(evaluator: &'e mut E) -> Self {
+        Self {
+            evaluator,
+            stack: Vec::new(),
+            error: None,
+        }
+    }
+
+    pub fn finish(mut self) -> Result<V, Error> {
+        if let Some(err) = self.error {
+            Err(err)
+        } else {
+            Ok(self.stack.pop().expect(Self::STACK_EMPTY))
+        }
+    }
+}
+
+impl<E, Idx, B, U, T> Extend<Expression<Idx, B, U, T>>
+    for ImmediateEvaluator<'_, E, E::Value, E::Error>
+where
+    E: Evaluator<Idx, B, U, T> + ?Sized,
+{
+    /// Evaluate the expressions from the iterator
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if it encounters an operator and the stack does not contain enough
+    /// values for the operator's arguments. It will also panic if the input is empty.
+    fn extend<It>(&mut self, iter: It)
+    where
+        It: IntoIterator<Item = Expression<Idx, B, U, T>>,
+    {
+        for expr in iter {
+            match expr.kind {
+                ExpressionKind::BinaryOperator(op) => {
+                    let rhs = self.stack.pop().expect(Self::STACK_EMPTY);
+                    let lhs = self.stack.pop().expect(Self::STACK_EMPTY);
+                    match self
+                        .evaluator
+                        .evaluate_binary_operator(expr.span, op, lhs, rhs)
+                    {
+                        Ok(val) => self.stack.push(val),
+                        Err(err) => {
+                            self.error = Some(err);
+                            break;
+                        }
+                    }
+                }
+                ExpressionKind::UnaryOperator(op) => {
+                    let argument = self.stack.pop().expect(Self::STACK_EMPTY);
+                    match self
+                        .evaluator
+                        .evaluate_unary_operator(expr.span, op, argument)
+                    {
+                        Ok(val) => self.stack.push(val),
+                        Err(err) => {
+                            self.error = Some(err);
+                            break;
+                        }
+                    }
+                }
+                ExpressionKind::Term(term) => match self.evaluator.evaluate_term(expr.span, term) {
+                    Ok(val) => self.stack.push(val),
+                    Err(err) => {
+                        self.error = Some(err);
+                        break;
+                    }
+                },
+            }
+        }
+    }
+}
+
 /// Evaluate the input expression queue using the provided `Evaluator`.
 ///
 /// # Panics
@@ -43,27 +125,9 @@ where
     E: Evaluator<Idx, B, U, T> + ?Sized,
     I: IntoIterator<Item = Expression<Idx, B, U, T>>,
 {
-    const STACK_EMPTY: &str = "tried to pop from empty stack";
-
-    let mut stack = Vec::new();
-    for expr in input {
-        match expr.kind {
-            ExpressionKind::BinaryOperator(op) => {
-                let rhs = stack.pop().expect(STACK_EMPTY);
-                let lhs = stack.pop().expect(STACK_EMPTY);
-                stack.push(evaluator.evaluate_binary_operator(expr.span, op, lhs, rhs)?);
-            }
-            ExpressionKind::UnaryOperator(op) => {
-                let argument = stack.pop().expect(STACK_EMPTY);
-                stack.push(evaluator.evaluate_unary_operator(expr.span, op, argument)?);
-            }
-            ExpressionKind::Term(term) => {
-                stack.push(evaluator.evaluate_term(expr.span, term)?);
-            }
-        }
-    }
-
-    Ok(stack.pop().expect(STACK_EMPTY))
+    let mut evaluator = ImmediateEvaluator::new(evaluator);
+    evaluator.extend(input);
+    evaluator.finish()
 }
 
 /// An `Evaluator` whose `Value` type is the same as its `Term` type, and whose operators
