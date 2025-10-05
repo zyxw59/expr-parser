@@ -207,11 +207,19 @@ where
 }
 
 /// An [`Evaluator`] which simply collects its expressions into an abstract syntax tree.
-#[derive(Default)]
-pub struct TreeEvaluator;
+pub struct TreeEvaluator<Tree>(std::marker::PhantomData<fn() -> Tree>);
 
-impl<Idx, B, U, T> Evaluator<Idx, B, U, T> for TreeEvaluator {
-    type Value = ExpressionTree<Idx, B, U, T>;
+impl<Tree> Default for TreeEvaluator<Tree> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<Idx, B, U, T, Tree> Evaluator<Idx, B, U, T> for TreeEvaluator<Tree>
+where
+    Tree: ExpressionTree<Idx, B, U, T>,
+{
+    type Value = Tree;
     type Error = std::convert::Infallible;
 
     fn evaluate_binary_operator(
@@ -221,14 +229,14 @@ impl<Idx, B, U, T> Evaluator<Idx, B, U, T> for TreeEvaluator {
         left: Self::Value,
         right: Self::Value,
     ) -> Result<Self::Value, Self::Error> {
-        Ok(ExpressionTree {
+        Ok(Tree::from_node(
             span,
-            node: Box::new(ExpressionNode::Binary {
+            ExpressionNode::Binary {
                 operator,
                 left,
                 right,
-            }),
-        })
+            },
+        ))
     }
 
     fn evaluate_unary_operator(
@@ -237,35 +245,30 @@ impl<Idx, B, U, T> Evaluator<Idx, B, U, T> for TreeEvaluator {
         operator: U,
         argument: Self::Value,
     ) -> Result<Self::Value, Self::Error> {
-        Ok(ExpressionTree {
+        Ok(Tree::from_node(
             span,
-            node: Box::new(ExpressionNode::Unary { operator, argument }),
-        })
+            ExpressionNode::Unary { operator, argument },
+        ))
     }
 
     fn evaluate_term(&mut self, span: Span<Idx>, value: T) -> Result<Self::Value, Self::Error> {
-        Ok(ExpressionTree {
-            span,
-            node: Box::new(ExpressionNode::Term { value }),
-        })
+        Ok(Tree::from_node(span, ExpressionNode::Term { value }))
     }
 }
 
-/// An abstract syntax tree representing an expression
-pub struct ExpressionTree<Idx, B, U, T> {
-    pub span: Span<Idx>,
-    pub node: Box<ExpressionNode<Idx, B, U, T>>,
+pub trait ExpressionTree<Idx, B, U, T>: Sized {
+    fn from_node(span: Span<Idx>, node: ExpressionNode<Self, B, U, T>) -> Self;
 }
 
-pub enum ExpressionNode<Idx, B, U, T> {
+pub enum ExpressionNode<Tree, B, U, T> {
     Binary {
         operator: B,
-        left: ExpressionTree<Idx, B, U, T>,
-        right: ExpressionTree<Idx, B, U, T>,
+        left: Tree,
+        right: Tree,
     },
     Unary {
         operator: U,
-        argument: ExpressionTree<Idx, B, U, T>,
+        argument: Tree,
     },
     Term {
         value: T,
