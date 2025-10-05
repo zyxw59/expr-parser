@@ -260,6 +260,7 @@ pub trait ExpressionTree<Idx, B, U, T>: Sized {
     fn from_node(span: Span<Idx>, node: ExpressionNode<Self, B, U, T>) -> Self;
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ExpressionNode<Tree, B, U, T> {
     Binary {
         operator: B,
