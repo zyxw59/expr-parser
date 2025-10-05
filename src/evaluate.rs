@@ -89,6 +89,12 @@ impl<E, V, Error> ImmediateEvaluator<E, V, Error> {
     }
 }
 
+impl<E: Default, V, Error> Default for ImmediateEvaluator<E, V, Error> {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
 impl<E, Idx, B, U, T> Extend<Expression<Idx, B, U, T>> for ImmediateEvaluator<E, E::Value, E::Error>
 where
     E: Evaluator<Idx, B, U, T>,
@@ -165,6 +171,7 @@ where
 
 /// An [`Evaluator`] whose `Value` type is the same as its `Term` type, and whose operators
 /// are pure functions on that type that return `Result<Term, E>`
+#[derive(Default)]
 pub struct PureEvaluator;
 
 impl<Idx, B, U, T, E> Evaluator<Idx, B, U, T> for PureEvaluator
@@ -200,6 +207,7 @@ where
 }
 
 /// An [`Evaluator`] which simply collects its expressions into an abstract syntax tree.
+#[derive(Default)]
 pub struct TreeEvaluator;
 
 impl<Idx, B, U, T> Evaluator<Idx, B, U, T> for TreeEvaluator {
