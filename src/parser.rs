@@ -322,11 +322,13 @@ where
                 false
             }
             Postfix::LeftDelimiter {
+                precedence,
                 delimiter,
                 operator,
                 empty,
             } => {
                 self.state = State::PostOperator;
+                self.pop_while_lower_precedence(&Fixity::Right(precedence));
                 // left delimiter in operator position indicates a function call or similar.
                 // this is indicated by adding a binary operator (with the same token as the
                 // delimiter) to the stack immediately after the delimiter itself. this
@@ -570,6 +572,7 @@ pub enum Postfix<P, D, B, U> {
         operator: U,
     },
     LeftDelimiter {
+        precedence: P,
         delimiter: D,
         operator: B,
         empty: Option<U>,
@@ -767,6 +770,8 @@ mod tests {
         Multiplicative,
         /// Exponential operators, such as `^` and `!`
         Exponential,
+        /// Function call
+        FunctionCall,
     }
 
     impl Delimiter for SimpleDelimiter {
@@ -804,6 +809,7 @@ mod tests {
                         empty: None,
                     },
                     postfix: Postfix::LeftDelimiter {
+                        precedence: SimplePrecedence::FunctionCall,
                         delimiter: SimpleDelimiter::Paren,
                         operator: s,
                         empty: Some("()"),
@@ -931,6 +937,7 @@ mod tests {
     #[test_case("[ ]", "[]" ; "empty list" )]
     #[test_case("[ ] + [ ]", "[] [] +" ; "adding lists" )]
     #[test_case("f()", "f ()" ; "empty function call" )]
+    #[test_case("-f()", "f () -" ; "function call with prefix operator" )]
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , (,) [" ; "trailing comma" )]
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
