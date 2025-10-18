@@ -177,10 +177,10 @@ where
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.extend(Some(Expression {
+                    self.push_expression(Expression {
                         kind,
                         span: el.span.clone(),
-                    }));
+                    });
                 } else {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::EndOfInput {
@@ -188,7 +188,7 @@ where
                         },
                         span: Span {
                             start: self.end_of_input.clone(),
-                            end: self.end_of_input,
+                            end: self.end_of_input.clone(),
                         },
                     })
                 }
@@ -202,10 +202,10 @@ where
         }
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.extend(Some(Expression {
+                self.push_expression(Expression {
                     kind,
                     span: el.span.clone(),
-                }));
+                });
             }
             if el.order.is_delimiter() {
                 self.errors.push(ParseError {
@@ -218,6 +218,15 @@ where
             Ok(self.queue)
         } else {
             Err(self.errors.into())
+        }
+    }
+
+    fn push_expression(
+        &mut self,
+        expr: Expression<Idx, P::BinaryOperator, P::UnaryOperator, P::Term>,
+    ) {
+        if self.errors.is_empty() {
+            self.queue.extend(Some(expr));
         }
     }
 
@@ -258,20 +267,20 @@ where
             }
             Prefix::Term { term } => {
                 self.state = State::PostTerm;
-                self.queue.extend(Some(Expression {
+                self.push_expression(Expression {
                     span,
                     kind: ExpressionKind::Term(term),
-                }));
+                });
                 false
             }
             Prefix::None => {
                 self.state = State::PostTerm;
                 if let Some(el) = self.stack.pop() {
                     if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                        self.queue.extend(Some(Expression {
+                        self.push_expression(Expression {
                             kind,
                             span: el.span,
-                        }));
+                        });
                     } else {
                         self.errors.push(ParseError {
                             kind: ParseErrorKind::UnexpectedToken {
@@ -355,10 +364,10 @@ where
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.queue.extend(Some(Expression {
+                    self.push_expression(Expression {
                         kind,
                         span: el.span.clone(),
-                    }));
+                    });
                 } else {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::UnexpectedToken {
@@ -377,10 +386,10 @@ where
         self.state = State::PostTerm;
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.extend(Some(Expression {
+                self.push_expression(Expression {
                     kind,
                     span: el.span.clone(),
-                }));
+                });
             }
             if let StackOrder::Delimiter(left) = el.order {
                 self.check_delimiter_match(left, el.span, right, span);
@@ -432,19 +441,19 @@ where
         self.state = State::PostTerm;
         let fixity = Fixity::Right(precedence);
         self.pop_while_lower_precedence(&fixity);
-        self.queue.extend(Some(Expression {
+        self.push_expression(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
-        }));
+        });
     }
 
     fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
         while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
-                self.queue.extend(Some(Expression {
+                self.push_expression(Expression {
                     kind,
                     span: el.span,
-                }));
+                });
             }
         }
     }
