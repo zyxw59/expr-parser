@@ -153,6 +153,19 @@ where
     }
 }
 
+impl<E, Idx, B, U, T> Extend<Expression<Idx, B, U, T>>
+    for &'_ mut ImmediateEvaluator<E, E::Value, E::Error>
+where
+    E: Evaluator<Idx, B, U, T>,
+{
+    fn extend<It>(&mut self, iter: It)
+    where
+        It: IntoIterator<Item = Expression<Idx, B, U, T>>,
+    {
+        (*self).extend(iter)
+    }
+}
+
 /// Evaluate the input expression queue using the provided `Evaluator`.
 ///
 /// # Panics
