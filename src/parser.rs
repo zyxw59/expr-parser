@@ -1,7 +1,6 @@
 use crate::{
     error::{ParseError, ParseErrorKind, ParseErrors, ParseErrorsFor},
     expression::{Expression, ExpressionKind},
-    operator::Fixity,
     token::{Token, Tokenizer},
     Span,
 };
@@ -250,13 +249,13 @@ where
                 false
             }
             Prefix::UnaryOperator {
-                precedence,
+                right_precedence,
                 operator,
                 no_rhs,
             } => {
                 self.stack.push(StackElement {
                     span,
-                    order: StackOrder::Precedence(precedence),
+                    order: StackOrder::Precedence(right_precedence),
                     operator: StackOperator::Unary {
                         unary: operator,
                         term: no_rhs,
@@ -302,33 +301,50 @@ where
                 false
             }
             Postfix::BinaryOperator {
-                fixity,
+                left_precedence,
+                right_precedence,
                 operator,
                 no_rhs,
             } => {
                 self.state = State::PostOperator;
-                self.process_binary_operator(span, fixity, operator, no_rhs);
+                self.process_binary_operator(
+                    span,
+                    left_precedence,
+                    right_precedence,
+                    operator,
+                    no_rhs,
+                );
                 false
             }
-            Postfix::ImplicitOperator { fixity, operator } => {
-                self.process_binary_operator(span.clone(), fixity, operator, None);
+            Postfix::ImplicitOperator {
+                left_precedence,
+                right_precedence,
+                operator,
+            } => {
+                self.process_binary_operator(
+                    span.clone(),
+                    left_precedence,
+                    right_precedence,
+                    operator,
+                    None,
+                );
                 true
             }
             Postfix::PostfixOperator {
-                precedence,
+                left_precedence,
                 operator,
             } => {
-                self.process_postfix_operator(span, precedence, operator);
+                self.process_postfix_operator(span, left_precedence, operator);
                 false
             }
             Postfix::LeftDelimiter {
-                precedence,
+                left_precedence,
                 delimiter,
                 operator,
                 empty,
             } => {
                 self.state = State::PostOperator;
-                self.pop_while_lower_precedence(&Fixity::Right(precedence));
+                self.pop_while_lower_precedence(&left_precedence);
                 // left delimiter in operator position indicates a function call or similar.
                 // this is indicated by adding a binary operator (with the same token as the
                 // delimiter) to the stack immediately after the delimiter itself. this
@@ -422,14 +438,15 @@ where
     fn process_binary_operator(
         &mut self,
         span: Span<Idx>,
-        fixity: Fixity<P::Precedence>,
+        left_precedence: P::Precedence,
+        right_precedence: P::Precedence,
         binary: P::BinaryOperator,
         unary: Option<P::UnaryOperator>,
     ) {
-        self.pop_while_lower_precedence(&fixity);
+        self.pop_while_lower_precedence(&left_precedence);
         self.stack.push(StackElement {
             span,
-            order: StackOrder::Precedence(fixity.into_precedence()),
+            order: StackOrder::Precedence(right_precedence),
             operator: StackOperator::Binary { binary, unary },
         });
     }
@@ -437,20 +454,19 @@ where
     fn process_postfix_operator(
         &mut self,
         span: Span<Idx>,
-        precedence: P::Precedence,
+        left_precedence: P::Precedence,
         operator: P::UnaryOperator,
     ) {
         self.state = State::PostTerm;
-        let fixity = Fixity::Right(precedence);
-        self.pop_while_lower_precedence(&fixity);
+        self.pop_while_lower_precedence(&left_precedence);
         self.push_expression(Expression {
             span,
             kind: ExpressionKind::UnaryOperator(operator),
         });
     }
 
-    fn pop_while_lower_precedence(&mut self, fixity: &Fixity<P::Precedence>) {
-        while let Some(el) = self.stack.pop_if_lower_precedence(fixity) {
+    fn pop_while_lower_precedence(&mut self, left_precedence: &P::Precedence) {
+        while let Some(el) = self.stack.pop_if_lower_precedence(left_precedence) {
             if let Some(kind) = el.operator.expression_kind_rhs() {
                 self.push_expression(Expression {
                     kind,
@@ -536,7 +552,7 @@ pub type ParserElement<P, T> = Element<
 
 pub enum Prefix<P, D, U, T> {
     UnaryOperator {
-        precedence: P,
+        right_precedence: P,
         operator: U,
         no_rhs: Option<T>,
     },
@@ -563,16 +579,17 @@ type ParserPrefix<P, T> = Prefix<
 
 pub enum Postfix<P, D, B, U> {
     BinaryOperator {
-        fixity: Fixity<P>,
+        left_precedence: P,
+        right_precedence: P,
         operator: B,
         no_rhs: Option<U>,
     },
     PostfixOperator {
-        precedence: P,
+        left_precedence: P,
         operator: U,
     },
     LeftDelimiter {
-        precedence: P,
+        left_precedence: P,
         delimiter: D,
         operator: B,
         empty: Option<U>,
@@ -581,7 +598,8 @@ pub enum Postfix<P, D, B, U> {
         delimiter: D,
     },
     ImplicitOperator {
-        fixity: Fixity<P>,
+        left_precedence: P,
+        right_precedence: P,
         operator: B,
     },
     None,
@@ -660,15 +678,12 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
         self.first_delimiter_idx.is_some()
     }
 
-    /// Pops the stack if the new operator has lower precedence than the top of the stack
+    /// Pops the stack if the new operator's precedence is less than or equal the top of the stack
     fn pop_if_lower_precedence(
         &mut self,
-        fixity: &Fixity<P::Precedence>,
+        left_precedence: &P::Precedence,
     ) -> Option<StackElement<T, Idx, P>> {
-        if match fixity {
-            Fixity::Left(prec) => Some(prec) <= self.precedence(),
-            Fixity::Right(prec) => Some(prec) < self.precedence(),
-        } {
+        if Some(left_precedence) <= self.precedence() {
             self.pop()
         } else {
             None
@@ -744,7 +759,6 @@ mod tests {
     use crate::{
         error::ParseErrorKind,
         expression::{Expression, ExpressionKind},
-        operator::Fixity,
         token::{
             charset::{SimpleCharSetTokenKind, SimpleTokenizer, StrSource},
             Tokenizer,
@@ -809,7 +823,7 @@ mod tests {
                         empty: None,
                     },
                     postfix: Postfix::LeftDelimiter {
-                        precedence: SimplePrecedence::FunctionCall,
+                        left_precedence: SimplePrecedence::FunctionCall,
                         delimiter: SimpleDelimiter::Paren,
                         operator: s,
                         empty: Some("()"),
@@ -852,19 +866,21 @@ mod tests {
                 "," => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(SimplePrecedence::Comma),
+                        left_precedence: SimplePrecedence::Comma,
+                        right_precedence: SimplePrecedence::Comma,
                         operator: s,
                         no_rhs: Some("(,)"),
                     },
                 },
                 "-" => Element {
                     prefix: Prefix::UnaryOperator {
-                        precedence: SimplePrecedence::Multiplicative,
+                        right_precedence: SimplePrecedence::Multiplicative,
                         operator: s,
                         no_rhs: None,
                     },
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(SimplePrecedence::Additive),
+                        left_precedence: SimplePrecedence::Additive,
+                        right_precedence: SimplePrecedence::Additive,
                         operator: s,
                         no_rhs: None,
                     },
@@ -872,7 +888,8 @@ mod tests {
                 "+" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(SimplePrecedence::Additive),
+                        left_precedence: SimplePrecedence::Additive,
+                        right_precedence: SimplePrecedence::Additive,
                         operator: s,
                         no_rhs: None,
                     },
@@ -880,7 +897,8 @@ mod tests {
                 "*" | "/" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Left(SimplePrecedence::Multiplicative),
+                        left_precedence: SimplePrecedence::Multiplicative,
+                        right_precedence: SimplePrecedence::Multiplicative,
                         operator: s,
                         no_rhs: None,
                     },
@@ -888,7 +906,8 @@ mod tests {
                 "^" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::BinaryOperator {
-                        fixity: Fixity::Right(SimplePrecedence::Exponential),
+                        left_precedence: SimplePrecedence::Exponential,
+                        right_precedence: SimplePrecedence::Multiplicative,
                         operator: s,
                         no_rhs: None,
                     },
@@ -896,7 +915,7 @@ mod tests {
                 "!" => Element {
                     prefix: Prefix::None,
                     postfix: Postfix::PostfixOperator {
-                        precedence: SimplePrecedence::Exponential,
+                        left_precedence: SimplePrecedence::Exponential,
                         operator: s,
                     },
                 },
@@ -905,7 +924,8 @@ mod tests {
                     // test unexpected token errors)
                     let postfix = if let SimpleCharSetTokenKind::Tag = kind {
                         Postfix::ImplicitOperator {
-                            fixity: Fixity::Left(SimplePrecedence::Multiplicative),
+                            left_precedence: SimplePrecedence::Multiplicative,
+                            right_precedence: SimplePrecedence::Multiplicative,
                             operator: "{*}",
                         }
                     } else {
@@ -942,6 +962,7 @@ mod tests {
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     #[test_case("5x^2", "5 x 2 ^ {*}" ; "implicit operator" )]
+    #[test_case("2 ^ 3 * 4", "2 3 ^ 4 *" ; "right associativity" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = parse::<_, _, Vec<_>>(
             SimpleTokenizer::new(StrSource::new(input)),
