@@ -362,50 +362,49 @@ where
     }
 
     fn handle_missing_rhs(&mut self, span: Span<Idx>, delimiter: &mut Option<P::Delimiter>) {
-        if self.state != State::PostTerm {
-            self.state = State::PostTerm;
+        if self.state == State::PostTerm {
+            return;
+        }
+        if self.get_missing_rhs(span.clone(), delimiter).is_none() {
+            self.errors.push(ParseError {
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: EXPECT_TERM,
+                },
+                span,
+            });
+        }
+    }
 
-            if let Some(el) = self.stack.pop() {
-                if let StackOrder::Delimiter(left) = el.order {
-                    if let Some(right) = delimiter.take() {
-                        self.check_delimiter_match(left, el.span.clone(), right, span.clone());
-                    } else {
-                        let el = StackElement {
-                            order: StackOrder::Delimiter(left),
-                            ..el
-                        };
-                        self.stack.push(el);
-                        self.errors.push(ParseError {
-                            kind: ParseErrorKind::UnexpectedToken {
-                                expected: EXPECT_TERM,
-                            },
-                            span: span.clone(),
-                        });
-                        return;
-                    }
-                }
-                if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.push_expression(Expression {
-                        kind,
-                        span: el.span.clone(),
-                    });
-                } else {
-                    self.errors.push(ParseError {
-                        kind: ParseErrorKind::UnexpectedToken {
-                            expected: EXPECT_TERM,
-                        },
-                        span: span.clone(),
-                    });
-                };
+    fn get_missing_rhs(
+        &mut self,
+        span: Span<Idx>,
+        delimiter: &mut Option<P::Delimiter>,
+    ) -> Option<()> {
+        self.state = State::PostTerm;
+
+        let el = self.stack.pop()?;
+
+        if let StackOrder::Delimiter(left) = el.order {
+            if let Some(right) = delimiter.take() {
+                self.check_delimiter_match(left, el.span.clone(), right, span);
             } else {
-                self.errors.push(ParseError {
-                    kind: ParseErrorKind::UnexpectedToken {
-                        expected: EXPECT_TERM,
-                    },
-                    span: span.clone(),
-                });
+                // put the left delimiter back on the stack so that it can match (or fail to match)
+                // later.
+                let el = StackElement {
+                    order: StackOrder::Delimiter(left),
+                    ..el
+                };
+                self.stack.push(el);
+                return None;
             }
         }
+
+        let kind = el.operator.expression_kind_no_rhs()?;
+        self.push_expression(Expression {
+            kind,
+            span: el.span,
+        });
+        Some(())
     }
 
     fn process_right_delimiter(&mut self, span: Span<Idx>, right: P::Delimiter) {
