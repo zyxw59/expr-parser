@@ -244,10 +244,6 @@ where
                 self.state = State::PostOperator;
                 false
             }
-            Prefix::RightDelimiter { delimiter } => {
-                self.process_right_delimiter(span, delimiter);
-                false
-            }
             Prefix::UnaryOperator {
                 right_precedence,
                 operator,
@@ -272,32 +268,18 @@ where
                 });
                 false
             }
-            Prefix::None => {
-                self.state = State::PostTerm;
-                if let Some(el) = self.stack.pop() {
-                    if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                        self.push_expression(Expression {
-                            kind,
-                            span: el.span,
-                        });
-                    } else {
-                        self.errors.push(ParseError {
-                            kind: ParseErrorKind::UnexpectedToken {
-                                expected: EXPECT_TERM,
-                            },
-                            span: span.clone(),
-                        });
-                    };
-                }
-                true
-            }
+            Prefix::None => true,
         }
     }
 
     fn parse_operator(&mut self, span: Span<Idx>, postfix: ParserPostfix<P, T>) -> bool {
         match postfix {
             Postfix::RightDelimiter { delimiter } => {
-                self.process_right_delimiter(span, delimiter);
+                let mut delimiter = Some(delimiter);
+                self.handle_missing_rhs(span.clone(), &mut delimiter);
+                if let Some(delimiter) = delimiter {
+                    self.process_right_delimiter(span, delimiter);
+                }
                 false
             }
             Postfix::BinaryOperator {
@@ -306,6 +288,7 @@ where
                 operator,
                 no_rhs,
             } => {
+                self.handle_missing_rhs(span.clone(), &mut None);
                 self.state = State::PostOperator;
                 self.process_binary_operator(
                     span,
@@ -321,6 +304,7 @@ where
                 right_precedence,
                 operator,
             } => {
+                self.handle_missing_rhs(span.clone(), &mut None);
                 self.process_binary_operator(
                     span.clone(),
                     left_precedence,
@@ -334,6 +318,7 @@ where
                 left_precedence,
                 operator,
             } => {
+                self.handle_missing_rhs(span.clone(), &mut None);
                 self.process_postfix_operator(span, left_precedence, operator);
                 false
             }
@@ -343,6 +328,7 @@ where
                 operator,
                 empty,
             } => {
+                self.handle_missing_rhs(span.clone(), &mut None);
                 self.state = State::PostOperator;
                 self.pop_while_lower_precedence(&left_precedence);
                 // left delimiter in operator position indicates a function call or similar.
@@ -362,6 +348,7 @@ where
                 false
             }
             Postfix::None => {
+                self.handle_missing_rhs(span.clone(), &mut None);
                 self.state = State::PostOperator;
                 self.errors.push(ParseError {
                     kind: ParseErrorKind::UnexpectedToken {
@@ -374,13 +361,29 @@ where
         }
     }
 
-    fn process_right_delimiter(&mut self, span: Span<Idx>, right: P::Delimiter) {
-        // If we don't have a right-hand operand, demote the operator on the top of the stack
-        // (binary -> unary, unary -> term) if possible. If it is not possible (i.e. that operator
-        // requires a right-hand operand), then push an error. We don't early return though, since
-        // we still want to find the matching delimiter so that we can continue parsing.
+    fn handle_missing_rhs(&mut self, span: Span<Idx>, delimiter: &mut Option<P::Delimiter>) {
         if self.state != State::PostTerm {
+            self.state = State::PostTerm;
+
             if let Some(el) = self.stack.pop() {
+                if let StackOrder::Delimiter(left) = el.order {
+                    if let Some(right) = delimiter.take() {
+                        self.check_delimiter_match(left, el.span.clone(), right, span.clone());
+                    } else {
+                        let el = StackElement {
+                            order: StackOrder::Delimiter(left),
+                            ..el
+                        };
+                        self.stack.push(el);
+                        self.errors.push(ParseError {
+                            kind: ParseErrorKind::UnexpectedToken {
+                                expected: EXPECT_TERM,
+                            },
+                            span: span.clone(),
+                        });
+                        return;
+                    }
+                }
                 if let Some(kind) = el.operator.expression_kind_no_rhs() {
                     self.push_expression(Expression {
                         kind,
@@ -394,13 +397,18 @@ where
                         span: span.clone(),
                     });
                 };
-                if let StackOrder::Delimiter(left) = el.order {
-                    self.state = State::PostTerm;
-                    self.check_delimiter_match(left, el.span, right, span);
-                    return;
-                }
+            } else {
+                self.errors.push(ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
+                        expected: EXPECT_TERM,
+                    },
+                    span: span.clone(),
+                });
             }
-        };
+        }
+    }
+
+    fn process_right_delimiter(&mut self, span: Span<Idx>, right: P::Delimiter) {
         self.state = State::PostTerm;
         while let Some(el) = self.stack.pop() {
             if let Some(kind) = el.operator.expression_kind_rhs() {
@@ -560,9 +568,6 @@ pub enum Prefix<P, D, U, T> {
         delimiter: D,
         operator: Option<U>,
         empty: Option<T>,
-    },
-    RightDelimiter {
-        delimiter: D,
     },
     Term {
         term: T,
@@ -830,9 +835,7 @@ mod tests {
                     },
                 },
                 ")" => Element {
-                    prefix: Prefix::RightDelimiter {
-                        delimiter: SimpleDelimiter::Paren,
-                    },
+                    prefix: Prefix::None,
                     postfix: Postfix::RightDelimiter {
                         delimiter: SimpleDelimiter::Paren,
                     },
@@ -846,9 +849,7 @@ mod tests {
                     postfix: Postfix::None,
                 },
                 "]" => Element {
-                    prefix: Prefix::RightDelimiter {
-                        delimiter: SimpleDelimiter::SquareBracket,
-                    },
+                    prefix: Prefix::None,
                     postfix: Postfix::RightDelimiter {
                         delimiter: SimpleDelimiter::SquareBracket,
                     },
@@ -1044,6 +1045,13 @@ mod tests {
     #[test_case("1 + * 2", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 4..5),
     ] ; "extra operator" )]
+    #[test_case("* 3", &[
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 0..1),
+    ] ; "initial operator")]
+    #[test_case("[ * 3", &[
+        (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 2..3),
+        (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
+    ] ; "operator after brackets")]
     fn parse_expression_fail(
         input: &str,
         expected: &[(ParseErrorKind<Infallible, Infallible, usize>, Range<usize>)],
