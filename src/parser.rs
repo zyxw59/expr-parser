@@ -290,27 +290,29 @@ where
                     kind: ExpressionKind::UnaryOperator(operator),
                 });
                 self.state = State::PostTerm;
+                false
             }
             Prefix::Terminal(None) => {
                 self.state = State::PostTerm;
+                false
             }
             Prefix::Nonterminal {
                 terminal,
                 precedence,
-                nonterminal,
+                nonterminal: (binary, reparse_as_prefix),
             } => {
                 self.stack.push(StackElement {
                     span,
                     order: precedence,
                     operator: StackOperator::Binary {
-                        binary: nonterminal,
+                        binary,
                         unary: terminal,
                     },
                 });
                 self.state = State::PostOperator;
+                reparse_as_prefix
             }
-        };
-        false
+        }
     }
 
     fn handle_missing_rhs(&mut self, span: Span<Idx>, delimiter: &mut Option<P::Delimiter>) {
@@ -496,7 +498,7 @@ type ParserPrefix<P, T> = Prefix<
 
 pub struct Postfix<P, D, B, U> {
     pub left: StackOrder<P, D>,
-    pub right: Prefix<P, D, B, U>,
+    pub right: Prefix<P, D, (B, bool), U>,
 }
 
 type ParserPostfix<P, T> = Postfix<
@@ -714,7 +716,7 @@ mod tests {
                         right: Prefix::Nonterminal {
                             terminal: Some(Some("()")),
                             precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
-                            nonterminal: s,
+                            nonterminal: (s, false),
                         },
                     }),
                 },
@@ -758,7 +760,7 @@ mod tests {
                         right: Prefix::Nonterminal {
                             terminal: Some(Some("(,)")),
                             precedence: StackOrder::Precedence(SimplePrecedence::Comma),
-                            nonterminal: s,
+                            nonterminal: (s, false),
                         },
                     }),
                 },
@@ -773,7 +775,7 @@ mod tests {
                         right: Prefix::Nonterminal {
                             terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Additive),
-                            nonterminal: s,
+                            nonterminal: (s, false),
                         },
                     }),
                 },
@@ -784,7 +786,7 @@ mod tests {
                         right: Prefix::Nonterminal {
                             terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Additive),
-                            nonterminal: s,
+                            nonterminal: (s, false),
                         },
                     }),
                 },
@@ -795,7 +797,7 @@ mod tests {
                         right: Prefix::Nonterminal {
                             terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
-                            nonterminal: s,
+                            nonterminal: (s, false),
                         },
                     }),
                 },
@@ -806,7 +808,7 @@ mod tests {
                         right: Prefix::Nonterminal {
                             terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
-                            nonterminal: s,
+                            nonterminal: (s, false),
                         },
                     }),
                 },
@@ -821,7 +823,16 @@ mod tests {
                     // variables get implicit multiplication, other tokens don't (so that we can
                     // test unexpected token errors)
                     let postfix = if let SimpleCharSetTokenKind::Tag = kind {
-                        None // TODO: implicit operator
+                        Some(Postfix {
+                            left: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                            right: Prefix::Nonterminal {
+                                terminal: None,
+                                precedence: StackOrder::Precedence(
+                                    SimplePrecedence::Multiplicative,
+                                ),
+                                nonterminal: ("{*}", true),
+                            },
+                        })
                     } else {
                         None
                     };
