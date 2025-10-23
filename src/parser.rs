@@ -241,7 +241,7 @@ where
                 });
                 self.state = State::PostTerm;
             }
-            Prefix::Optional {
+            Prefix::Nonterminal {
                 terminal,
                 precedence,
                 nonterminal,
@@ -251,21 +251,7 @@ where
                     order: precedence,
                     operator: StackOperator::Unary {
                         unary: nonterminal,
-                        term: Some(terminal),
-                    },
-                });
-                self.state = State::PostOperator;
-            }
-            Prefix::Required {
-                precedence,
-                nonterminal,
-            } => {
-                self.stack.push(StackElement {
-                    span,
-                    order: precedence,
-                    operator: StackOperator::Unary {
-                        unary: nonterminal,
-                        term: None,
+                        term: terminal,
                     },
                 });
                 self.state = State::PostOperator;
@@ -308,7 +294,7 @@ where
             Prefix::Terminal(None) => {
                 self.state = State::PostTerm;
             }
-            Prefix::Optional {
+            Prefix::Nonterminal {
                 terminal,
                 precedence,
                 nonterminal,
@@ -318,21 +304,7 @@ where
                     order: precedence,
                     operator: StackOperator::Binary {
                         binary: nonterminal,
-                        unary: Some(terminal),
-                    },
-                });
-                self.state = State::PostOperator;
-            }
-            Prefix::Required {
-                precedence,
-                nonterminal,
-            } => {
-                self.stack.push(StackElement {
-                    span,
-                    order: precedence,
-                    operator: StackOperator::Binary {
-                        binary: nonterminal,
-                        unary: None,
+                        unary: terminal,
                     },
                 });
                 self.state = State::PostOperator;
@@ -508,12 +480,8 @@ pub type ParserElement<P, T> = Element<
 
 pub enum Prefix<P, D, U, T> {
     Terminal(T),
-    Optional {
-        terminal: T,
-        precedence: StackOrder<P, D>,
-        nonterminal: U,
-    },
-    Required {
+    Nonterminal {
+        terminal: Option<T>,
         precedence: StackOrder<P, D>,
         nonterminal: U,
     },
@@ -635,7 +603,6 @@ impl<T, Idx, P: Parser<T>> StackElement<T, Idx, P> {
 
 #[derive(Clone, Copy, Debug)]
 enum StackOperator<B, U, T> {
-    None { term: Option<T> },
     Binary { binary: B, unary: Option<Option<U>> },
     Unary { unary: Option<U>, term: Option<T> },
 }
@@ -643,7 +610,6 @@ enum StackOperator<B, U, T> {
 impl<B, U, T> StackOperator<B, U, T> {
     fn expression_kind_rhs(self) -> Option<ExpressionKind<B, U, T>> {
         match self {
-            Self::None { .. } => None,
             Self::Binary { binary, .. } => Some(ExpressionKind::BinaryOperator(binary)),
             Self::Unary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
         }
@@ -651,9 +617,7 @@ impl<B, U, T> StackOperator<B, U, T> {
 
     fn expression_kind_no_rhs(self) -> Option<Option<ExpressionKind<B, U, T>>> {
         match self {
-            Self::None { term } | Self::Unary { term, .. } => {
-                term.map(ExpressionKind::Term).map(Some)
-            }
+            Self::Unary { term, .. } => term.map(ExpressionKind::Term).map(Some),
             Self::Binary { unary, .. } => {
                 unary.map(|unary| unary.map(ExpressionKind::UnaryOperator))
             }
@@ -661,7 +625,7 @@ impl<B, U, T> StackOperator<B, U, T> {
     }
     fn can_have_no_rhs(&self) -> bool {
         match self {
-            Self::None { term } | Self::Unary { term, .. } => term.is_some(),
+            Self::Unary { term, .. } => term.is_some(),
             Self::Binary { unary, .. } => unary.is_some(),
         }
     }
@@ -740,14 +704,15 @@ mod tests {
         > {
             Ok(match s {
                 "(" => Element {
-                    prefix: Some(Prefix::Required {
+                    prefix: Some(Prefix::Nonterminal {
+                        terminal: None,
                         precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
                         nonterminal: None,
                     }),
                     postfix: Some(Postfix {
                         left: StackOrder::Precedence(SimplePrecedence::FunctionCall),
-                        right: Prefix::Optional {
-                            terminal: Some("()"),
+                        right: Prefix::Nonterminal {
+                            terminal: Some(Some("()")),
                             precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
                             nonterminal: s,
                         },
@@ -761,8 +726,8 @@ mod tests {
                     }),
                 },
                 "[" => Element {
-                    prefix: Some(Prefix::Optional {
-                        terminal: "[]",
+                    prefix: Some(Prefix::Nonterminal {
+                        terminal: Some("[]"),
                         precedence: StackOrder::Delimiter(SimpleDelimiter::SquareBracket),
                         nonterminal: Some(s),
                     }),
@@ -776,7 +741,8 @@ mod tests {
                     }),
                 },
                 "|" => Element {
-                    prefix: Some(Prefix::Required {
+                    prefix: Some(Prefix::Nonterminal {
+                        terminal: None,
                         precedence: StackOrder::Delimiter(SimpleDelimiter::Pipe),
                         nonterminal: Some(s),
                     }),
@@ -789,21 +755,23 @@ mod tests {
                     prefix: None,
                     postfix: Some(Postfix {
                         left: StackOrder::Precedence(SimplePrecedence::Comma),
-                        right: Prefix::Optional {
-                            terminal: Some("(,)"),
+                        right: Prefix::Nonterminal {
+                            terminal: Some(Some("(,)")),
                             precedence: StackOrder::Precedence(SimplePrecedence::Comma),
                             nonterminal: s,
                         },
                     }),
                 },
                 "-" => Element {
-                    prefix: Some(Prefix::Required {
+                    prefix: Some(Prefix::Nonterminal {
+                        terminal: None,
                         precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
                         nonterminal: Some(s),
                     }),
                     postfix: Some(Postfix {
                         left: StackOrder::Precedence(SimplePrecedence::Additive),
-                        right: Prefix::Required {
+                        right: Prefix::Nonterminal {
+                            terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Additive),
                             nonterminal: s,
                         },
@@ -813,7 +781,8 @@ mod tests {
                     prefix: None,
                     postfix: Some(Postfix {
                         left: StackOrder::Precedence(SimplePrecedence::Additive),
-                        right: Prefix::Required {
+                        right: Prefix::Nonterminal {
+                            terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Additive),
                             nonterminal: s,
                         },
@@ -823,7 +792,8 @@ mod tests {
                     prefix: None,
                     postfix: Some(Postfix {
                         left: StackOrder::Precedence(SimplePrecedence::Multiplicative),
-                        right: Prefix::Required {
+                        right: Prefix::Nonterminal {
+                            terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
                             nonterminal: s,
                         },
@@ -833,7 +803,8 @@ mod tests {
                     prefix: None,
                     postfix: Some(Postfix {
                         left: StackOrder::Precedence(SimplePrecedence::Exponential),
-                        right: Prefix::Required {
+                        right: Prefix::Nonterminal {
+                            terminal: None,
                             precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
                             nonterminal: s,
                         },
