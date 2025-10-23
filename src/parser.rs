@@ -661,12 +661,15 @@ mod tests {
         Paren,
         SquareBracket,
         Pipe,
+        Conditional,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
     enum SimplePrecedence {
         /// Comma
         Comma,
+        /// Conditional operators, `?` and `:`
+        Conditional,
         /// Additive operators, such as `+` and `-`
         Additive,
         /// Multiplicative operators, such as `*` and `/`, as well as unary minus.
@@ -819,6 +822,28 @@ mod tests {
                         right: Prefix::Terminal(Some(s)),
                     }),
                 },
+                "?" => Element {
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Conditional),
+                        right: Prefix::Nonterminal {
+                            terminal: None,
+                            precedence: StackOrder::Delimiter(SimpleDelimiter::Conditional),
+                            nonterminal: (s, false),
+                        },
+                    }),
+                },
+                ":" => Element {
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Delimiter(SimpleDelimiter::Conditional),
+                        right: Prefix::Nonterminal {
+                            terminal: None,
+                            precedence: StackOrder::Precedence(SimplePrecedence::Comma),
+                            nonterminal: (s, false),
+                        },
+                    }),
+                },
                 _ => {
                     // variables get implicit multiplication, other tokens don't (so that we can
                     // test unexpected token errors)
@@ -868,6 +893,9 @@ mod tests {
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
     #[test_case("5x^2", "5 x 2 ^ {*}" ; "implicit operator" )]
     #[test_case("2 ^ 3 * 4", "2 3 ^ 4 *" ; "right associativity" )]
+    #[test_case("P ? a : Q ? b : c", "P a ? Q b ? c : :" ; "chained conditionals" )]
+    #[test_case("P ? Q ? a : b : c", "P Q a ? b : ? c :" ; "nested conditionals" )]
+    #[test_case("P ? a, x : b, Q ? c : d", "P a x , ? b : Q c ? d : ," ; "conditionals and commas" )]
     fn parse_expression(input: &str, output: &str) -> anyhow::Result<()> {
         let actual = parse::<_, _, Vec<_>>(
             SimpleTokenizer::new(StrSource::new(input)),
