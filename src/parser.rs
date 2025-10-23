@@ -175,13 +175,13 @@ where
     pub fn finish(mut self) -> Result<Q, ParseErrors<P::Error, TokErr, Idx>> {
         if self.state != State::PostTerm {
             if let Some(el) = self.stack.pop() {
-                if let Some(kind) = el.operator.expression_kind_no_rhs() {
-                    self.push_expression(Expression {
+                match el.operator.expression_kind_no_rhs() {
+                    Some(Some(kind)) => self.push_expression(Expression {
                         kind,
                         span: el.span.clone(),
-                    });
-                } else {
-                    self.errors.push(ParseError {
+                    }),
+                    Some(None) => {}
+                    None => self.errors.push(ParseError {
                         kind: ParseErrorKind::EndOfInput {
                             expected: EXPECT_TERM,
                         },
@@ -189,7 +189,7 @@ where
                             start: self.end_of_input.clone(),
                             end: self.end_of_input.clone(),
                         },
-                    })
+                    }),
                 }
                 if el.order.is_delimiter() {
                     self.errors.push(ParseError {
@@ -229,136 +229,116 @@ where
         }
     }
 
-    fn parse_term(&mut self, span: Span<Idx>, prefix: ParserPrefix<P, T>) -> bool {
+    fn parse_term(&mut self, span: Span<Idx>, prefix: Option<ParserPrefix<P, T>>) -> bool {
+        let Some(prefix) = prefix else {
+            return true;
+        };
         match prefix {
-            Prefix::LeftDelimiter {
-                delimiter,
-                operator,
-                empty,
-            } => {
-                self.stack.push(StackElement {
-                    span,
-                    order: StackOrder::Delimiter(delimiter),
-                    operator: StackOperator::unary_delimiter(operator, empty),
-                });
-                self.state = State::PostOperator;
-                false
-            }
-            Prefix::UnaryOperator {
-                right_precedence,
-                operator,
-                no_rhs,
-            } => {
-                self.stack.push(StackElement {
-                    span,
-                    order: StackOrder::Precedence(right_precedence),
-                    operator: StackOperator::Unary {
-                        unary: operator,
-                        term: no_rhs,
-                    },
-                });
-                self.state = State::PostOperator;
-                false
-            }
-            Prefix::Term { term } => {
-                self.state = State::PostTerm;
+            Prefix::Terminal(term) => {
                 self.push_expression(Expression {
                     span,
                     kind: ExpressionKind::Term(term),
                 });
-                false
+                self.state = State::PostTerm;
             }
-            Prefix::None => true,
+            Prefix::Optional {
+                terminal,
+                precedence,
+                nonterminal,
+            } => {
+                self.stack.push(StackElement {
+                    span,
+                    order: precedence,
+                    operator: StackOperator::Unary {
+                        unary: nonterminal,
+                        term: Some(terminal),
+                    },
+                });
+                self.state = State::PostOperator;
+            }
+            Prefix::Required {
+                precedence,
+                nonterminal,
+            } => {
+                self.stack.push(StackElement {
+                    span,
+                    order: precedence,
+                    operator: StackOperator::Unary {
+                        unary: nonterminal,
+                        term: None,
+                    },
+                });
+                self.state = State::PostOperator;
+            }
         }
+        false
     }
 
-    fn parse_operator(&mut self, span: Span<Idx>, postfix: ParserPostfix<P, T>) -> bool {
-        match postfix {
-            Postfix::RightDelimiter { delimiter } => {
+    fn parse_operator(&mut self, span: Span<Idx>, postfix: Option<ParserPostfix<P, T>>) -> bool {
+        let Some(postfix) = postfix else {
+            self.errors.push(ParseError {
+                span,
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: EXPECT_OPERATOR,
+                },
+            });
+            return true;
+        };
+        match postfix.left {
+            StackOrder::Delimiter(delimiter) => {
                 let mut delimiter = Some(delimiter);
                 self.handle_missing_rhs(span.clone(), &mut delimiter);
                 if let Some(delimiter) = delimiter {
-                    self.process_right_delimiter(span, delimiter);
+                    self.process_right_delimiter(span.clone(), delimiter);
                 }
-                false
             }
-            Postfix::BinaryOperator {
-                left_precedence,
-                right_precedence,
-                operator,
-                no_rhs,
-            } => {
+            StackOrder::Precedence(precedence) => {
                 self.handle_missing_rhs(span.clone(), &mut None);
-                self.state = State::PostOperator;
-                self.process_binary_operator(
-                    span,
-                    left_precedence,
-                    right_precedence,
-                    operator,
-                    no_rhs,
-                );
-                false
-            }
-            Postfix::ImplicitOperator {
-                left_precedence,
-                right_precedence,
-                operator,
-            } => {
-                self.handle_missing_rhs(span.clone(), &mut None);
-                self.process_binary_operator(
-                    span.clone(),
-                    left_precedence,
-                    right_precedence,
-                    operator,
-                    None,
-                );
-                true
-            }
-            Postfix::PostfixOperator {
-                left_precedence,
-                operator,
-            } => {
-                self.handle_missing_rhs(span.clone(), &mut None);
-                self.process_postfix_operator(span, left_precedence, operator);
-                false
-            }
-            Postfix::LeftDelimiter {
-                left_precedence,
-                delimiter,
-                operator,
-                empty,
-            } => {
-                self.handle_missing_rhs(span.clone(), &mut None);
-                self.state = State::PostOperator;
-                self.pop_while_lower_precedence(&left_precedence);
-                // left delimiter in operator position indicates a function call or similar.
-                // this is indicated by adding a binary operator (with the same token as the
-                // delimiter) to the stack immediately after the delimiter itself. this
-                // operator will then function as the "function application" operator (or a
-                // related operator, such as "struct construction") when it is popped from the
-                // stack after the closing delimiter is matched
-                self.stack.push(StackElement {
-                    span,
-                    order: StackOrder::Delimiter(delimiter),
-                    operator: StackOperator::Binary {
-                        binary: operator,
-                        unary: empty,
-                    },
-                });
-                false
-            }
-            Postfix::None => {
-                self.handle_missing_rhs(span.clone(), &mut None);
-                self.state = State::PostOperator;
-                self.errors.push(ParseError {
-                    kind: ParseErrorKind::UnexpectedToken {
-                        expected: EXPECT_OPERATOR,
-                    },
-                    span,
-                });
-                true
+                self.pop_while_lower_precedence(&precedence);
             }
         }
+        match postfix.right {
+            Prefix::Terminal(Some(operator)) => {
+                self.push_expression(Expression {
+                    span,
+                    kind: ExpressionKind::UnaryOperator(operator),
+                });
+                self.state = State::PostTerm;
+            }
+            Prefix::Terminal(None) => {
+                self.state = State::PostTerm;
+            }
+            Prefix::Optional {
+                terminal,
+                precedence,
+                nonterminal,
+            } => {
+                self.stack.push(StackElement {
+                    span,
+                    order: precedence,
+                    operator: StackOperator::Binary {
+                        binary: nonterminal,
+                        unary: Some(terminal),
+                    },
+                });
+                self.state = State::PostOperator;
+            }
+            Prefix::Required {
+                precedence,
+                nonterminal,
+            } => {
+                self.stack.push(StackElement {
+                    span,
+                    order: precedence,
+                    operator: StackOperator::Binary {
+                        binary: nonterminal,
+                        unary: None,
+                    },
+                });
+                self.state = State::PostOperator;
+            }
+        };
+        false
     }
 
     fn handle_missing_rhs(&mut self, span: Span<Idx>, delimiter: &mut Option<P::Delimiter>) {
@@ -380,8 +360,6 @@ where
         span: Span<Idx>,
         delimiter: &mut Option<P::Delimiter>,
     ) -> Option<()> {
-        self.state = State::PostTerm;
-
         let el = self.stack.pop()?;
 
         if let StackOrder::Delimiter(left) = el.order {
@@ -399,11 +377,12 @@ where
             }
         }
 
-        let kind = el.operator.expression_kind_no_rhs()?;
-        self.push_expression(Expression {
-            kind,
-            span: el.span,
-        });
+        if let Some(kind) = el.operator.expression_kind_no_rhs()? {
+            self.push_expression(Expression {
+                kind,
+                span: el.span,
+            });
+        }
         Some(())
     }
 
@@ -440,36 +419,6 @@ where
                 span: right_span,
             });
         }
-    }
-
-    fn process_binary_operator(
-        &mut self,
-        span: Span<Idx>,
-        left_precedence: P::Precedence,
-        right_precedence: P::Precedence,
-        binary: P::BinaryOperator,
-        unary: Option<P::UnaryOperator>,
-    ) {
-        self.pop_while_lower_precedence(&left_precedence);
-        self.stack.push(StackElement {
-            span,
-            order: StackOrder::Precedence(right_precedence),
-            operator: StackOperator::Binary { binary, unary },
-        });
-    }
-
-    fn process_postfix_operator(
-        &mut self,
-        span: Span<Idx>,
-        left_precedence: P::Precedence,
-        operator: P::UnaryOperator,
-    ) {
-        self.state = State::PostTerm;
-        self.pop_while_lower_precedence(&left_precedence);
-        self.push_expression(Expression {
-            span,
-            kind: ExpressionKind::UnaryOperator(operator),
-        });
     }
 
     fn pop_while_lower_precedence(&mut self, left_precedence: &P::Precedence) {
@@ -545,8 +494,8 @@ pub trait Delimiter {
 }
 
 pub struct Element<P, D, B, U, T> {
-    pub prefix: Prefix<P, D, U, T>,
-    pub postfix: Postfix<P, D, B, U>,
+    pub prefix: Option<Prefix<P, D, Option<U>, T>>,
+    pub postfix: Option<Postfix<P, D, B, Option<U>>>,
 }
 
 pub type ParserElement<P, T> = Element<
@@ -558,62 +507,35 @@ pub type ParserElement<P, T> = Element<
 >;
 
 pub enum Prefix<P, D, U, T> {
-    UnaryOperator {
-        right_precedence: P,
-        operator: U,
-        no_rhs: Option<T>,
+    Terminal(T),
+    Optional {
+        terminal: T,
+        precedence: StackOrder<P, D>,
+        nonterminal: U,
     },
-    LeftDelimiter {
-        delimiter: D,
-        operator: Option<U>,
-        empty: Option<T>,
+    Required {
+        precedence: StackOrder<P, D>,
+        nonterminal: U,
     },
-    Term {
-        term: T,
-    },
-    None,
 }
 
 type ParserPrefix<P, T> = Prefix<
     <P as Parser<T>>::Precedence,
     <P as Parser<T>>::Delimiter,
-    <P as Parser<T>>::UnaryOperator,
+    Option<<P as Parser<T>>::UnaryOperator>,
     <P as Parser<T>>::Term,
 >;
 
-pub enum Postfix<P, D, B, U> {
-    BinaryOperator {
-        left_precedence: P,
-        right_precedence: P,
-        operator: B,
-        no_rhs: Option<U>,
-    },
-    PostfixOperator {
-        left_precedence: P,
-        operator: U,
-    },
-    LeftDelimiter {
-        left_precedence: P,
-        delimiter: D,
-        operator: B,
-        empty: Option<U>,
-    },
-    RightDelimiter {
-        delimiter: D,
-    },
-    ImplicitOperator {
-        left_precedence: P,
-        right_precedence: P,
-        operator: B,
-    },
-    None,
+pub struct Postfix<P, D, B, U> {
+    pub left: StackOrder<P, D>,
+    pub right: Prefix<P, D, B, U>,
 }
 
 type ParserPostfix<P, T> = Postfix<
     <P as Parser<T>>::Precedence,
     <P as Parser<T>>::Delimiter,
     <P as Parser<T>>::BinaryOperator,
-    <P as Parser<T>>::UnaryOperator,
+    Option<<P as Parser<T>>::UnaryOperator>,
 >;
 
 pub enum StackOrder<P, D> {
@@ -714,30 +636,27 @@ impl<T, Idx, P: Parser<T>> StackElement<T, Idx, P> {
 #[derive(Clone, Copy, Debug)]
 enum StackOperator<B, U, T> {
     None { term: Option<T> },
-    Binary { binary: B, unary: Option<U> },
-    Unary { unary: U, term: Option<T> },
+    Binary { binary: B, unary: Option<Option<U>> },
+    Unary { unary: Option<U>, term: Option<T> },
 }
 
 impl<B, U, T> StackOperator<B, U, T> {
-    fn unary_delimiter(unary: Option<U>, term: Option<T>) -> Self {
-        match unary {
-            None => Self::None { term },
-            Some(unary) => Self::Unary { unary, term },
-        }
-    }
-
     fn expression_kind_rhs(self) -> Option<ExpressionKind<B, U, T>> {
         match self {
             Self::None { .. } => None,
             Self::Binary { binary, .. } => Some(ExpressionKind::BinaryOperator(binary)),
-            Self::Unary { unary, .. } => Some(ExpressionKind::UnaryOperator(unary)),
+            Self::Unary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
         }
     }
 
-    fn expression_kind_no_rhs(self) -> Option<ExpressionKind<B, U, T>> {
+    fn expression_kind_no_rhs(self) -> Option<Option<ExpressionKind<B, U, T>>> {
         match self {
-            Self::None { term } | Self::Unary { term, .. } => term.map(ExpressionKind::Term),
-            Self::Binary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
+            Self::None { term } | Self::Unary { term, .. } => {
+                term.map(ExpressionKind::Term).map(Some)
+            }
+            Self::Binary { unary, .. } => {
+                unary.map(|unary| unary.map(ExpressionKind::UnaryOperator))
+            }
         }
     }
     fn can_have_no_rhs(&self) -> bool {
@@ -757,7 +676,7 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        parse, parse_one_term, Delimiter, Element, ParseState, Parser, Postfix, Prefix,
+        parse, parse_one_term, Delimiter, Element, ParseState, Parser, Postfix, Prefix, StackOrder,
         EXPECT_OPERATOR, EXPECT_TERM,
     };
     use crate::{
@@ -821,118 +740,122 @@ mod tests {
         > {
             Ok(match s {
                 "(" => Element {
-                    prefix: Prefix::LeftDelimiter {
-                        delimiter: SimpleDelimiter::Paren,
-                        operator: None,
-                        empty: None,
-                    },
-                    postfix: Postfix::LeftDelimiter {
-                        left_precedence: SimplePrecedence::FunctionCall,
-                        delimiter: SimpleDelimiter::Paren,
-                        operator: s,
-                        empty: Some("()"),
-                    },
+                    prefix: Some(Prefix::Required {
+                        precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
+                        nonterminal: None,
+                    }),
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::FunctionCall),
+                        right: Prefix::Optional {
+                            terminal: Some("()"),
+                            precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
+                            nonterminal: s,
+                        },
+                    }),
                 },
                 ")" => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::RightDelimiter {
-                        delimiter: SimpleDelimiter::Paren,
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Delimiter(SimpleDelimiter::Paren),
+                        right: Prefix::Terminal(None),
+                    }),
                 },
                 "[" => Element {
-                    prefix: Prefix::LeftDelimiter {
-                        delimiter: SimpleDelimiter::SquareBracket,
-                        operator: Some(s),
-                        empty: Some("[]"),
-                    },
-                    postfix: Postfix::None,
+                    prefix: Some(Prefix::Optional {
+                        terminal: "[]",
+                        precedence: StackOrder::Delimiter(SimpleDelimiter::SquareBracket),
+                        nonterminal: Some(s),
+                    }),
+                    postfix: None,
                 },
                 "]" => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::RightDelimiter {
-                        delimiter: SimpleDelimiter::SquareBracket,
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Delimiter(SimpleDelimiter::SquareBracket),
+                        right: Prefix::Terminal(None),
+                    }),
                 },
                 "|" => Element {
-                    prefix: Prefix::LeftDelimiter {
-                        delimiter: SimpleDelimiter::Pipe,
-                        operator: Some(s),
-                        empty: None,
-                    },
-                    postfix: Postfix::RightDelimiter {
-                        delimiter: SimpleDelimiter::Pipe,
-                    },
+                    prefix: Some(Prefix::Required {
+                        precedence: StackOrder::Delimiter(SimpleDelimiter::Pipe),
+                        nonterminal: Some(s),
+                    }),
+                    postfix: Some(Postfix {
+                        left: StackOrder::Delimiter(SimpleDelimiter::Pipe),
+                        right: Prefix::Terminal(None),
+                    }),
                 },
                 "," => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::BinaryOperator {
-                        left_precedence: SimplePrecedence::Comma,
-                        right_precedence: SimplePrecedence::Comma,
-                        operator: s,
-                        no_rhs: Some("(,)"),
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Comma),
+                        right: Prefix::Optional {
+                            terminal: Some("(,)"),
+                            precedence: StackOrder::Precedence(SimplePrecedence::Comma),
+                            nonterminal: s,
+                        },
+                    }),
                 },
                 "-" => Element {
-                    prefix: Prefix::UnaryOperator {
-                        right_precedence: SimplePrecedence::Multiplicative,
-                        operator: s,
-                        no_rhs: None,
-                    },
-                    postfix: Postfix::BinaryOperator {
-                        left_precedence: SimplePrecedence::Additive,
-                        right_precedence: SimplePrecedence::Additive,
-                        operator: s,
-                        no_rhs: None,
-                    },
+                    prefix: Some(Prefix::Required {
+                        precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                        nonterminal: Some(s),
+                    }),
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Additive),
+                        right: Prefix::Required {
+                            precedence: StackOrder::Precedence(SimplePrecedence::Additive),
+                            nonterminal: s,
+                        },
+                    }),
                 },
                 "+" => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::BinaryOperator {
-                        left_precedence: SimplePrecedence::Additive,
-                        right_precedence: SimplePrecedence::Additive,
-                        operator: s,
-                        no_rhs: None,
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Additive),
+                        right: Prefix::Required {
+                            precedence: StackOrder::Precedence(SimplePrecedence::Additive),
+                            nonterminal: s,
+                        },
+                    }),
                 },
                 "*" | "/" => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::BinaryOperator {
-                        left_precedence: SimplePrecedence::Multiplicative,
-                        right_precedence: SimplePrecedence::Multiplicative,
-                        operator: s,
-                        no_rhs: None,
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                        right: Prefix::Required {
+                            precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                            nonterminal: s,
+                        },
+                    }),
                 },
                 "^" => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::BinaryOperator {
-                        left_precedence: SimplePrecedence::Exponential,
-                        right_precedence: SimplePrecedence::Multiplicative,
-                        operator: s,
-                        no_rhs: None,
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Exponential),
+                        right: Prefix::Required {
+                            precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                            nonterminal: s,
+                        },
+                    }),
                 },
                 "!" => Element {
-                    prefix: Prefix::None,
-                    postfix: Postfix::PostfixOperator {
-                        left_precedence: SimplePrecedence::Exponential,
-                        operator: s,
-                    },
+                    prefix: None,
+                    postfix: Some(Postfix {
+                        left: StackOrder::Precedence(SimplePrecedence::Exponential),
+                        right: Prefix::Terminal(Some(s)),
+                    }),
                 },
                 _ => {
                     // variables get implicit multiplication, other tokens don't (so that we can
                     // test unexpected token errors)
                     let postfix = if let SimpleCharSetTokenKind::Tag = kind {
-                        Postfix::ImplicitOperator {
-                            left_precedence: SimplePrecedence::Multiplicative,
-                            right_precedence: SimplePrecedence::Multiplicative,
-                            operator: "{*}",
-                        }
+                        None // TODO: implicit operator
                     } else {
-                        Postfix::None
+                        None
                     };
                     Element {
-                        prefix: Prefix::Term { term: s },
+                        prefix: Some(Prefix::Terminal(s)),
                         postfix,
                     }
                 }
