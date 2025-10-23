@@ -191,7 +191,7 @@ where
                         },
                     }),
                 }
-                if el.order.is_delimiter() {
+                if el.binding.is_delimiter() {
                     self.errors.push(ParseError {
                         kind: ParseErrorKind::UnmatchedLeftDelimiter,
                         span: el.span,
@@ -206,7 +206,7 @@ where
                     span: el.span.clone(),
                 });
             }
-            if el.order.is_delimiter() {
+            if el.binding.is_delimiter() {
                 self.errors.push(ParseError {
                     kind: ParseErrorKind::UnmatchedLeftDelimiter,
                     span: el.span,
@@ -243,12 +243,12 @@ where
             }
             Prefix::Nonterminal {
                 terminal,
-                precedence,
+                binding,
                 nonterminal,
             } => {
                 self.stack.push(StackElement {
                     span,
-                    order: precedence,
+                    binding,
                     operator: StackOperator::Unary {
                         unary: nonterminal,
                         term: terminal,
@@ -271,14 +271,14 @@ where
             return true;
         };
         match postfix.left {
-            StackOrder::Delimiter(delimiter) => {
+            Binding::Delimiter(delimiter) => {
                 let mut delimiter = Some(delimiter);
                 self.handle_missing_rhs(span.clone(), &mut delimiter);
                 if let Some(delimiter) = delimiter {
                     self.process_right_delimiter(span.clone(), delimiter);
                 }
             }
-            StackOrder::Precedence(precedence) => {
+            Binding::Precedence(precedence) => {
                 self.handle_missing_rhs(span.clone(), &mut None);
                 self.pop_while_lower_precedence(&precedence);
             }
@@ -298,12 +298,12 @@ where
             }
             Prefix::Nonterminal {
                 terminal,
-                precedence,
+                binding,
                 nonterminal: (binary, reparse_as_prefix),
             } => {
                 self.stack.push(StackElement {
                     span,
-                    order: precedence,
+                    binding,
                     operator: StackOperator::Binary {
                         binary,
                         unary: terminal,
@@ -336,14 +336,14 @@ where
     ) -> Option<()> {
         let el = self.stack.pop()?;
 
-        if let StackOrder::Delimiter(left) = el.order {
+        if let Binding::Delimiter(left) = el.binding {
             if let Some(right) = delimiter.take() {
                 self.check_delimiter_match(left, el.span.clone(), right, span);
             } else {
                 // put the left delimiter back on the stack so that it can match (or fail to match)
                 // later.
                 let el = StackElement {
-                    order: StackOrder::Delimiter(left),
+                    binding: Binding::Delimiter(left),
                     ..el
                 };
                 self.stack.push(el);
@@ -369,7 +369,7 @@ where
                     span: el.span.clone(),
                 });
             }
-            if let StackOrder::Delimiter(left) = el.order {
+            if let Binding::Delimiter(left) = el.binding {
                 self.check_delimiter_match(left, el.span, right, span);
                 return;
             }
@@ -484,7 +484,7 @@ pub enum Prefix<P, D, U, T> {
     Terminal(T),
     Nonterminal {
         terminal: Option<T>,
-        precedence: StackOrder<P, D>,
+        binding: Binding<P, D>,
         nonterminal: U,
     },
 }
@@ -497,7 +497,7 @@ type ParserPrefix<P, T> = Prefix<
 >;
 
 pub struct Postfix<P, D, B, U> {
-    pub left: StackOrder<P, D>,
+    pub left: Binding<P, D>,
     pub right: Prefix<P, D, (B, bool), U>,
 }
 
@@ -508,12 +508,12 @@ type ParserPostfix<P, T> = Postfix<
     Option<<P as Parser<T>>::UnaryOperator>,
 >;
 
-pub enum StackOrder<P, D> {
+pub enum Binding<P, D> {
     Precedence(P),
     Delimiter(D),
 }
 
-impl<P, D> StackOrder<P, D> {
+impl<P, D> Binding<P, D> {
     fn precedence(&self) -> Option<&P> {
         match self {
             Self::Precedence(p) => Some(p),
@@ -552,7 +552,7 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
     }
 
     fn push(&mut self, element: StackElement<T, Idx, P>) {
-        if element.order.is_delimiter() && self.first_delimiter_idx.is_none() {
+        if element.binding.is_delimiter() && self.first_delimiter_idx.is_none() {
             self.first_delimiter_idx = Some(self.stack.len());
         }
         self.stack.push(element);
@@ -593,13 +593,13 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
 
 struct StackElement<T, Idx, P: Parser<T>> {
     span: Span<Idx>,
-    order: StackOrder<P::Precedence, P::Delimiter>,
+    binding: Binding<P::Precedence, P::Delimiter>,
     operator: StackOperator<P::BinaryOperator, P::UnaryOperator, P::Term>,
 }
 
 impl<T, Idx, P: Parser<T>> StackElement<T, Idx, P> {
     fn precedence(&self) -> Option<&P::Precedence> {
-        self.order.precedence()
+        self.binding.precedence()
     }
 }
 
@@ -642,7 +642,7 @@ mod tests {
     use test_case::test_case;
 
     use super::{
-        parse, parse_one_term, Delimiter, Element, ParseState, Parser, Postfix, Prefix, StackOrder,
+        parse, parse_one_term, Binding, Delimiter, Element, ParseState, Parser, Postfix, Prefix,
         EXPECT_OPERATOR, EXPECT_TERM,
     };
     use crate::{
@@ -711,14 +711,14 @@ mod tests {
                 "(" => Element {
                     prefix: Some(Prefix::Nonterminal {
                         terminal: None,
-                        precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
+                        binding: Binding::Delimiter(SimpleDelimiter::Paren),
                         nonterminal: None,
                     }),
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::FunctionCall),
+                        left: Binding::Precedence(SimplePrecedence::FunctionCall),
                         right: Prefix::Nonterminal {
                             terminal: Some(Some("()")),
-                            precedence: StackOrder::Delimiter(SimpleDelimiter::Paren),
+                            binding: Binding::Delimiter(SimpleDelimiter::Paren),
                             nonterminal: (s, false),
                         },
                     }),
@@ -726,14 +726,14 @@ mod tests {
                 ")" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Delimiter(SimpleDelimiter::Paren),
+                        left: Binding::Delimiter(SimpleDelimiter::Paren),
                         right: Prefix::Terminal(None),
                     }),
                 },
                 "[" => Element {
                     prefix: Some(Prefix::Nonterminal {
                         terminal: Some("[]"),
-                        precedence: StackOrder::Delimiter(SimpleDelimiter::SquareBracket),
+                        binding: Binding::Delimiter(SimpleDelimiter::SquareBracket),
                         nonterminal: Some(s),
                     }),
                     postfix: None,
@@ -741,28 +741,28 @@ mod tests {
                 "]" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Delimiter(SimpleDelimiter::SquareBracket),
+                        left: Binding::Delimiter(SimpleDelimiter::SquareBracket),
                         right: Prefix::Terminal(None),
                     }),
                 },
                 "|" => Element {
                     prefix: Some(Prefix::Nonterminal {
                         terminal: None,
-                        precedence: StackOrder::Delimiter(SimpleDelimiter::Pipe),
+                        binding: Binding::Delimiter(SimpleDelimiter::Pipe),
                         nonterminal: Some(s),
                     }),
                     postfix: Some(Postfix {
-                        left: StackOrder::Delimiter(SimpleDelimiter::Pipe),
+                        left: Binding::Delimiter(SimpleDelimiter::Pipe),
                         right: Prefix::Terminal(None),
                     }),
                 },
                 "," => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Comma),
+                        left: Binding::Precedence(SimplePrecedence::Comma),
                         right: Prefix::Nonterminal {
                             terminal: Some(Some("(,)")),
-                            precedence: StackOrder::Precedence(SimplePrecedence::Comma),
+                            binding: Binding::Precedence(SimplePrecedence::Comma),
                             nonterminal: (s, false),
                         },
                     }),
@@ -770,14 +770,14 @@ mod tests {
                 "-" => Element {
                     prefix: Some(Prefix::Nonterminal {
                         terminal: None,
-                        precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                        binding: Binding::Precedence(SimplePrecedence::Multiplicative),
                         nonterminal: Some(s),
                     }),
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Additive),
+                        left: Binding::Precedence(SimplePrecedence::Additive),
                         right: Prefix::Nonterminal {
                             terminal: None,
-                            precedence: StackOrder::Precedence(SimplePrecedence::Additive),
+                            binding: Binding::Precedence(SimplePrecedence::Additive),
                             nonterminal: (s, false),
                         },
                     }),
@@ -785,10 +785,10 @@ mod tests {
                 "+" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Additive),
+                        left: Binding::Precedence(SimplePrecedence::Additive),
                         right: Prefix::Nonterminal {
                             terminal: None,
-                            precedence: StackOrder::Precedence(SimplePrecedence::Additive),
+                            binding: Binding::Precedence(SimplePrecedence::Additive),
                             nonterminal: (s, false),
                         },
                     }),
@@ -796,10 +796,10 @@ mod tests {
                 "*" | "/" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                        left: Binding::Precedence(SimplePrecedence::Multiplicative),
                         right: Prefix::Nonterminal {
                             terminal: None,
-                            precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                            binding: Binding::Precedence(SimplePrecedence::Multiplicative),
                             nonterminal: (s, false),
                         },
                     }),
@@ -807,10 +807,10 @@ mod tests {
                 "^" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Exponential),
+                        left: Binding::Precedence(SimplePrecedence::Exponential),
                         right: Prefix::Nonterminal {
                             terminal: None,
-                            precedence: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                            binding: Binding::Precedence(SimplePrecedence::Multiplicative),
                             nonterminal: (s, false),
                         },
                     }),
@@ -818,17 +818,17 @@ mod tests {
                 "!" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Exponential),
+                        left: Binding::Precedence(SimplePrecedence::Exponential),
                         right: Prefix::Terminal(Some(s)),
                     }),
                 },
                 "?" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Precedence(SimplePrecedence::Conditional),
+                        left: Binding::Precedence(SimplePrecedence::Conditional),
                         right: Prefix::Nonterminal {
                             terminal: None,
-                            precedence: StackOrder::Delimiter(SimpleDelimiter::Conditional),
+                            binding: Binding::Delimiter(SimpleDelimiter::Conditional),
                             nonterminal: (s, false),
                         },
                     }),
@@ -836,10 +836,10 @@ mod tests {
                 ":" => Element {
                     prefix: None,
                     postfix: Some(Postfix {
-                        left: StackOrder::Delimiter(SimpleDelimiter::Conditional),
+                        left: Binding::Delimiter(SimpleDelimiter::Conditional),
                         right: Prefix::Nonterminal {
                             terminal: None,
-                            precedence: StackOrder::Precedence(SimplePrecedence::Comma),
+                            binding: Binding::Precedence(SimplePrecedence::Comma),
                             nonterminal: (s, false),
                         },
                     }),
@@ -849,12 +849,10 @@ mod tests {
                     // test unexpected token errors)
                     let postfix = if let SimpleCharSetTokenKind::Tag = kind {
                         Some(Postfix {
-                            left: StackOrder::Precedence(SimplePrecedence::Multiplicative),
+                            left: Binding::Precedence(SimplePrecedence::Multiplicative),
                             right: Prefix::Nonterminal {
                                 terminal: None,
-                                precedence: StackOrder::Precedence(
-                                    SimplePrecedence::Multiplicative,
-                                ),
+                                binding: Binding::Precedence(SimplePrecedence::Multiplicative),
                                 nonterminal: ("{*}", true),
                             },
                         })
