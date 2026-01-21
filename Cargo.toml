@@ -17,4 +17,4 @@ charset-tokenizer = ["dep:bstr", "dep:bytes", "dep:either", "dep:unicode-xid"]
 [dev-dependencies]
 anyhow = "1.0.68"
 test-case = "2.2.2"
-expr-parser = { path = ".", features = ["charset-tokenizer"] }
+selkirk = { path = ".", features = ["charset-tokenizer"] }
