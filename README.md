@@ -1,6 +1,7 @@
-# expr-parser
+# Selkirk
 
-A simple expression parser using the [shunting yard algorithm][shunting-yard].
+An expression parser using the [shunting yard algorithm][shunting-yard], with
+additional features.
 
 [Documentation][docs]
 

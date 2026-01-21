@@ -1,5 +1,5 @@
 [package]
-name = "expr-parser"
+name = "selkirk"
 version = "0.1.0"
 edition = "2021"
 authors = ["emily Crandall Fleischman <emilycf@mit.edu>"]
