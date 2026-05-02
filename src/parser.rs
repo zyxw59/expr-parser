@@ -771,7 +771,7 @@ mod tests {
                     prefix: Some(Prefix::Nonterminal {
                         terminal: None,
                         binding: Binding::Precedence(SimplePrecedence::Multiplicative),
-                        nonterminal: Some(s),
+                        nonterminal: Some("(-)"),
                     }),
                     postfix: Some(Postfix {
                         left: Binding::Precedence(SimplePrecedence::Additive),
@@ -879,16 +879,17 @@ mod tests {
     #[test_case("3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3", "3 4 2 * 1 5 - 2 3 ^ ^ / +" ; "simple arithmetic" )]
     #[test_case("sin(max(5/2, 3)) / 3 * pi", "sin max 5 2 / 3 , ( ( 3 / pi *" ; "with functions" )]
     #[test_case("2^3!", "2 3 ! ^" ; "postfix operators" )]
-    #[test_case("-2^3 + (-2)^3", "2 3 ^ - 2 - 3 ^ +" ; "prefix operators" )]
+    #[test_case("-2^3 + (-2)^3", "2 3 ^ (-) 2 (-) 3 ^ +" ; "prefix operators" )]
     #[test_case("[1, 2, 3, 4]", "1 2 , 3 , 4 , [" ; "delimiter operators" )]
     #[test_case("[1, (2, 3), 4]", "1 2 3 , , 4 , [" ; "nested delimiter operators" )]
     #[test_case("[ ]", "[]" ; "empty list" )]
     #[test_case("[ ] + [ ]", "[] [] +" ; "adding lists" )]
     #[test_case("f()", "f ()" ; "empty function call" )]
-    #[test_case("-f()", "f () -" ; "function call with prefix operator" )]
+    #[test_case("-f()", "f () (-)" ; "function call with prefix operator" )]
     #[test_case("[1, 2, 3, 4, ]", "1 2 , 3 , 4 , (,) [" ; "trailing comma" )]
     #[test_case("a * |b|", "a b | *" ; "absolute value" )]
     #[test_case("a, * b", "a (,) b *" ; "trailing comma with binary operator" )]
+    #[test_case("1 , - 2", "1 2 (-) ,"; "comma with prefix operator")]
     #[test_case("5x^2", "5 x 2 ^ {*}" ; "implicit operator" )]
     #[test_case("2 ^ 3 * 4", "2 3 ^ 4 *" ; "right associativity" )]
     #[test_case("P ? a : Q ? b : c", "P a ? Q b ? c : :" ; "chained conditionals" )]
@@ -908,9 +909,9 @@ mod tests {
     }
 
     #[test_case("3", "3", "" ; "single term" )]
-    #[test_case("-3!", "3 -", "!" ; "unary operators" )]
+    #[test_case("-3!", "3 (-)", "!" ; "unary operators" )]
     #[test_case("3!", "3", "!" ; "postfix operator" )]
-    #[test_case("-3 a", "3 -", "a" ; "unary operators with additional" )]
+    #[test_case("-3 a", "3 (-)", "a" ; "unary operators with additional" )]
     #[test_case("(5 + 4) * (3 - 2)", "5 4 +", "* (3 - 2)" ; "delimited group" )]
     #[test_case("(3)!", "3", "!" ; "delimited with unary operators" )]
     #[test_case("abc def)", "abc", "def)" ; "ignores invalid after first term" )]
