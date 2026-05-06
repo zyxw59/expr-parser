@@ -54,8 +54,8 @@ pub enum ParseErrorKind<T, Idx> {
     EndOfInput { expected: &'static str },
     UnexpectedToken { expected: &'static str },
     MismatchedDelimiter { opening: Span<Idx> },
-    UnmatchedRightDelimiter,
-    UnmatchedLeftDelimiter,
+    UnmatchedClosingDelimiter,
+    UnmatchedOpeningDelimiter,
     Tokenizer(T),
 }
 
@@ -75,8 +75,8 @@ where
             Self::MismatchedDelimiter { opening } => {
                 write!(f, "Mismatched closing delimiter (opening {opening})")
             }
-            Self::UnmatchedRightDelimiter => f.write_str("Unmatched closing delimiter"),
-            Self::UnmatchedLeftDelimiter => f.write_str("Unmatched opening delimiter"),
+            Self::UnmatchedClosingDelimiter => f.write_str("Unmatched closing delimiter"),
+            Self::UnmatchedOpeningDelimiter => f.write_str("Unmatched opening delimiter"),
             Self::Tokenizer(err) => fmt::Display::fmt(err, f),
         }
     }
@@ -91,8 +91,8 @@ impl<T, Idx> ParseErrorKind<T, Idx> {
             Self::MismatchedDelimiter { opening } => {
                 ParseErrorKind::MismatchedDelimiter { opening }
             }
-            Self::UnmatchedRightDelimiter => ParseErrorKind::UnmatchedRightDelimiter,
-            Self::UnmatchedLeftDelimiter => ParseErrorKind::UnmatchedLeftDelimiter,
+            Self::UnmatchedClosingDelimiter => ParseErrorKind::UnmatchedClosingDelimiter,
+            Self::UnmatchedOpeningDelimiter => ParseErrorKind::UnmatchedOpeningDelimiter,
             Self::Tokenizer(e) => ParseErrorKind::Tokenizer(f(e)),
         }
     }

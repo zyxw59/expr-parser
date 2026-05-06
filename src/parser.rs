@@ -187,12 +187,12 @@ where
         // no delimiters on the stack
         !self.stack.has_delimiter()
             && (
-                // in post-term state or the top of the stack can go without a right-hand-side
+                // in trailer state or the top of the stack can go without a following argument
                 self.state == State::Trailer
                     || self
                         .stack
                         .peek_top()
-                        .is_some_and(|top| top.operator.can_have_no_rhs())
+                        .is_some_and(|top| top.operator.can_have_no_follower())
             )
     }
 
@@ -204,7 +204,7 @@ where
     pub fn finish(mut self) -> Result<Q, ParseErrors<TokErr, Idx>> {
         if self.state != State::Trailer {
             if let Some(el) = self.stack.pop() {
-                match el.operator.expression_kind_no_rhs() {
+                match el.operator.expression_kind_no_follower() {
                     Some(kind) => self.push_expression(Expression {
                         kind,
                         span: el.span.clone(),
@@ -221,14 +221,14 @@ where
                 }
                 if el.binding.is_delimiter() {
                     self.errors.push(ParseError {
-                        kind: ParseErrorKind::UnmatchedLeftDelimiter,
+                        kind: ParseErrorKind::UnmatchedOpeningDelimiter,
                         span: el.span,
                     })
                 }
             }
         }
         while let Some(el) = self.stack.pop() {
-            let kind = el.operator.expression_kind_rhs();
+            let kind = el.operator.expression_kind_follower();
             self.push_expression(Expression {
                 kind,
                 span: el.span.clone(),
@@ -236,7 +236,7 @@ where
 
             if el.binding.is_delimiter() {
                 self.errors.push(ParseError {
-                    kind: ParseErrorKind::UnmatchedLeftDelimiter,
+                    kind: ParseErrorKind::UnmatchedOpeningDelimiter,
                     span: el.span,
                 })
             }
@@ -292,13 +292,13 @@ where
         match trailer.pre_binding {
             Binding::Delimiter(delimiter) => {
                 let mut delimiter = Some(delimiter);
-                self.handle_missing_rhs(span.clone(), &mut delimiter);
+                self.handle_missing_follower(span.clone(), &mut delimiter);
                 if let Some(delimiter) = delimiter {
-                    self.process_right_delimiter(span.clone(), delimiter);
+                    self.process_close_delimiter(span.clone(), delimiter);
                 }
             }
             Binding::Precedence(precedence) => {
-                self.handle_missing_rhs(span.clone(), &mut None);
+                self.handle_missing_follower(span.clone(), &mut None);
                 self.pop_while_lower_precedence(&precedence);
             }
         }
@@ -348,11 +348,11 @@ where
         })
     }
 
-    fn handle_missing_rhs(&mut self, span: Span<Idx>, delimiter: &mut Option<P::Delimiter>) {
+    fn handle_missing_follower(&mut self, span: Span<Idx>, delimiter: &mut Option<P::Delimiter>) {
         if self.state == State::Trailer {
             return;
         }
-        if self.get_missing_rhs(span.clone(), delimiter).is_none() {
+        if self.get_missing_follower(span.clone(), delimiter).is_none() {
             self.errors.push(ParseError {
                 kind: ParseErrorKind::UnexpectedToken {
                     expected: EXPECT_TERM,
@@ -362,21 +362,21 @@ where
         }
     }
 
-    fn get_missing_rhs(
+    fn get_missing_follower(
         &mut self,
         span: Span<Idx>,
         delimiter: &mut Option<P::Delimiter>,
     ) -> Option<()> {
         let el = self.stack.pop()?;
 
-        if let Binding::Delimiter(left) = el.binding {
-            if let Some(right) = delimiter.take() {
-                self.check_delimiter_match(left, el.span.clone(), right, span);
+        if let Binding::Delimiter(open) = el.binding {
+            if let Some(close) = delimiter.take() {
+                self.check_delimiter_match(open, el.span.clone(), close, span);
             } else {
-                // put the left delimiter back on the stack so that it can match (or fail to match)
+                // put the opening delimiter back on the stack so that it can match (or fail to match)
                 // later.
                 let el = StackElement {
-                    binding: Binding::Delimiter(left),
+                    binding: Binding::Delimiter(open),
                     ..el
                 };
                 self.stack.push(el);
@@ -384,7 +384,7 @@ where
             }
         }
 
-        let kind = el.operator.expression_kind_no_rhs()?;
+        let kind = el.operator.expression_kind_no_follower()?;
         self.push_expression(Expression {
             kind,
             span: el.span,
@@ -393,44 +393,44 @@ where
         Some(())
     }
 
-    fn process_right_delimiter(&mut self, span: Span<Idx>, right: P::Delimiter) {
+    fn process_close_delimiter(&mut self, span: Span<Idx>, close: P::Delimiter) {
         self.state = State::Trailer;
         while let Some(el) = self.stack.pop() {
-            let kind = el.operator.expression_kind_rhs();
+            let kind = el.operator.expression_kind_follower();
             self.push_expression(Expression {
                 kind,
                 span: el.span.clone(),
             });
 
-            if let Binding::Delimiter(left) = el.binding {
-                self.check_delimiter_match(left, el.span, right, span);
+            if let Binding::Delimiter(open) = el.binding {
+                self.check_delimiter_match(open, el.span, close, span);
                 return;
             }
         }
         self.errors.push(ParseError {
-            kind: ParseErrorKind::UnmatchedRightDelimiter,
+            kind: ParseErrorKind::UnmatchedClosingDelimiter,
             span,
         })
     }
 
     fn check_delimiter_match(
         &mut self,
-        left: P::Delimiter,
-        left_span: Span<Idx>,
-        right: P::Delimiter,
-        right_span: Span<Idx>,
+        open: P::Delimiter,
+        open_span: Span<Idx>,
+        close: P::Delimiter,
+        close_span: Span<Idx>,
     ) {
-        if !left.matches(&right) {
+        if !open.matches(&close) {
             self.errors.push(ParseError {
-                kind: ParseErrorKind::MismatchedDelimiter { opening: left_span },
-                span: right_span,
+                kind: ParseErrorKind::MismatchedDelimiter { opening: open_span },
+                span: close_span,
             });
         }
     }
 
-    fn pop_while_lower_precedence(&mut self, left_precedence: &P::Precedence) {
-        while let Some(el) = self.stack.pop_if_lower_precedence(left_precedence) {
-            let kind = el.operator.expression_kind_rhs();
+    fn pop_while_lower_precedence(&mut self, precedence: &P::Precedence) {
+        while let Some(el) = self.stack.pop_if_lower_precedence(precedence) {
+            let kind = el.operator.expression_kind_follower();
             self.push_expression(Expression {
                 kind,
                 span: el.span,
@@ -611,9 +611,9 @@ impl<T, Idx, P: Parser<T>> Stack<T, Idx, P> {
     /// Pops the stack if the new operator's precedence is less than or equal the top of the stack
     fn pop_if_lower_precedence(
         &mut self,
-        left_precedence: &P::Precedence,
+        precedence: &P::Precedence,
     ) -> Option<StackElement<T, Idx, P>> {
-        if Some(left_precedence) <= self.precedence() {
+        if Some(precedence) <= self.precedence() {
             self.pop()
         } else {
             None
@@ -644,20 +644,20 @@ enum StackOperator<B, U, T> {
 }
 
 impl<B, U, T> StackOperator<B, U, T> {
-    fn expression_kind_rhs(self) -> ExpressionKind<B, U, T> {
+    fn expression_kind_follower(self) -> ExpressionKind<B, U, T> {
         match self {
             Self::Binary { binary, .. } => ExpressionKind::BinaryOperator(binary),
             Self::Unary { unary, .. } => ExpressionKind::UnaryOperator(unary),
         }
     }
 
-    fn expression_kind_no_rhs(self) -> Option<ExpressionKind<B, U, T>> {
+    fn expression_kind_no_follower(self) -> Option<ExpressionKind<B, U, T>> {
         match self {
             Self::Unary { term, .. } => term.map(ExpressionKind::Term),
             Self::Binary { unary, .. } => unary.map(ExpressionKind::UnaryOperator),
         }
     }
-    fn can_have_no_rhs(&self) -> bool {
+    fn can_have_no_follower(&self) -> bool {
         match self {
             Self::Unary { term, .. } => term.is_some(),
             Self::Binary { unary, .. } => unary.is_some(),
@@ -995,20 +995,20 @@ mod tests {
         Ok(())
     }
 
-    #[test_case("1 )", &[(ParseErrorKind::UnmatchedRightDelimiter, 2..3)] ; "unmatched right paren" )]
+    #[test_case("1 )", &[(ParseErrorKind::UnmatchedClosingDelimiter, 2..3)] ; "unmatched right paren" )]
     #[test_case("1 +", &[(ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 3..3)] ; "end of input" )]
     #[test_case("(5 5 +", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_OPERATOR }, 3..4),
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 5..6),
         (ParseErrorKind::EndOfInput { expected: EXPECT_TERM }, 6..6),
-        (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
+        (ParseErrorKind::UnmatchedOpeningDelimiter, 0..1),
     ] ; "multiple errors")]
     #[test_case("[ 1 )", &[
         (ParseErrorKind::MismatchedDelimiter { opening: (0..1).into() }, 4..5),
     ] ; "mismatched delimiters" )]
     #[test_case("( [ 1 )", &[
         (ParseErrorKind::MismatchedDelimiter { opening: (2..3).into() }, 6..7),
-        (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
+        (ParseErrorKind::UnmatchedOpeningDelimiter, 0..1),
     ] ; "mismatched delimiters 2" )]
     #[test_case("[ 1 + )", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 6..7),
@@ -1022,7 +1022,7 @@ mod tests {
     ] ; "initial operator")]
     #[test_case("[ * 3", &[
         (ParseErrorKind::UnexpectedToken { expected: EXPECT_TERM }, 2..3),
-        (ParseErrorKind::UnmatchedLeftDelimiter, 0..1),
+        (ParseErrorKind::UnmatchedOpeningDelimiter, 0..1),
     ] ; "operator after brackets")]
     fn parse_expression_fail(
         input: &str,
